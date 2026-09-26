@@ -8,10 +8,11 @@
 //                     chromatic fringe, split-tone grade (scene-linear), hue-preserving S-curve + per-channel soft
 //                     shoulder (fire stays orange/yellow, white armour keeps its shading), bottom darkening,
 //                     vignette, grain, 2 px ordered dither + palette quantisation (retro).
-// post=0 renders straight to the canvas. Render-only: reads camera/focus, never touches sim state.
+// Render-only: reads camera/focus, never touches sim state.
 import * as THREE from 'three';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
+import { SUN_DIR } from '../world/sky.js';
 
 // Tunables. Every key k is uniform u<K> in all passes.
 // Tuned on overview / crowd-fight / musou captures toward the concept stats (luma mean ≈ 0.36, p5 ≤ 0.08, p95 ≥ 0.78,
@@ -32,7 +33,6 @@ const P = {
 };
 const uName = (k) => 'u' + k[0].toUpperCase() + k.slice(1);
 const pUniforms = () => Object.fromEntries(Object.entries(P).map(([k, v]) => [uName(k), { value: Array.isArray(v) ? new THREE.Vector3(...v) : v }]));
-const syncP = (u) => { for (const k in P) { const x = u[uName(k)]; if (Array.isArray(P[k])) x.value.set(...P[k]); else x.value = P[k]; } };
 
 const quadVS = /* glsl */`varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
 
@@ -170,58 +170,52 @@ const FinalShader = /* glsl */`
 const mat = (fragmentShader, uniforms) => new THREE.ShaderMaterial({ vertexShader: quadVS, fragmentShader, uniforms: { ...pUniforms(), ...uniforms }, depthTest: false, depthWrite: false, toneMapped: false });
 const v3 = (a) => new THREE.Vector3(...a);
 
-export function createPost({ canvas, enabled = true, width, height }) {
-  const renderer = new THREE.WebGLRenderer({
-    canvas, antialias: !enabled, powerPreference: 'high-performance', preserveDrawingBuffer: false,
-  });
-  renderer.setPixelRatio(enabled ? 1 : Math.min(devicePixelRatio, 2));
+export function createPost({ canvas, width, height }) {
+  const renderer = new THREE.WebGLRenderer({ canvas, powerPreference: 'high-performance' });
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.0;
-  renderer.info.autoReset = false;
 
-  let sceneRT, atmosRT, dofRT, bloom, atmos, dof, fin;
-  if (enabled) {
-    sceneRT = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType, samples: 4, depthTexture: new THREE.DepthTexture(4, 4) });
-    // nearest: the half-res DoF must not average a hero-plane distance with the background behind it
-    atmosRT = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType, depthBuffer: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
-    dofRT = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType, depthBuffer: false });
-    bloom = new UnrealBloomPass(new THREE.Vector2(320, 180), P.bloom, P.bloomRadius, P.bloomThreshold);
-    bloom.blendMaterial.visible = false;          // don't add onto dofRT: the final pass adds the bloom to both branches
-    // prefilter: soft knee instead of a hard cut (no popping), and blue-dominant light (the spear arc, the one cool
-    // light in a warm frame) passes at a lower threshold so the arc glows like the concept's without blooming the sand
-    const hp = bloom.materialHighPassFilter;
-    hp.uniforms.uCool = { value: 0 };
-    hp.fragmentShader = /* glsl */`
-      uniform sampler2D tDiffuse; uniform float luminosityThreshold, smoothWidth, uCool;
-      varying vec2 vUv;
-      void main() {
-        vec3 c = texture2D(tDiffuse, vUv).rgb;
-        float cool = clamp((c.b - c.r) / max(c.b, 1e-3), 0.0, 1.0);
-        float v = luminance(c) * (1.0 + uCool * cool);
-        gl_FragColor = vec4(min(c, vec3(1.6)) * smoothstep(luminosityThreshold, luminosityThreshold + smoothWidth, v), 1.0);   // capped: stacked trails glow, never flare over the hero
-      }`;
-    // bloom keeps its source's hue (orange fire → orange halo, blue arc → blue halo); the wide mips lean only a little
-    // warm, the grade already carries the golden hour. The two widest mips are faint: at full weight a large bright mass
-    // (the Musou payoff's dragon + light shards) spread into a screen-wide pale-blue veil; light stays a local glow.
-    bloom.bloomTintColors = [v3([0.95, 1, 1.08]), v3([1, 0.97, 0.93]), v3([0.45, 0.42, 0.39]), v3([0.12, 0.11, 0.1]), v3([0.03, 0.026, 0.023])];
-    const dofU = { uFocus: { value: 7 }, uNearScale: { value: 1 }, uFarScale: { value: 1 }, uBandN: { value: 3 }, uBandF: { value: 5 } };   // shared by dof + final
-    atmos = new FullScreenQuad(mat(AtmosShader, {
-      tColor: { value: sceneRT.texture }, tDepth: { value: sceneRT.depthTexture },
-      uProjInv: { value: new THREE.Matrix4() }, uCamWorld: { value: new THREE.Matrix4() },
-      uSunDir: { value: new THREE.Vector3(-0.62, 0.2, 0.76).normalize() }, uCamPos: { value: new THREE.Vector3() },
-    }));
-    dof = new FullScreenQuad(mat(DofShader, { tAtmos: { value: atmosRT.texture }, uTexel: { value: new THREE.Vector2() }, ...dofU }));
-    fin = new FullScreenQuad(mat(FinalShader, {
-      tSharp: { value: atmosRT.texture }, tDof: { value: dofRT.texture }, tBloom: { value: bloom.renderTargetsHorizontal[0].texture },
-      uRes: { value: new THREE.Vector2(1280, 720) }, uTime: { value: 0 }, uFlash: { value: 0 }, uTmB: { value: 1 }, uTmC: { value: 1 }, ...dofU,
-    }));
-  }
+  const sceneRT = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType, samples: 4, depthTexture: new THREE.DepthTexture(4, 4) });
+  // nearest: the half-res DoF must not average a hero-plane distance with the background behind it
+  const atmosRT = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType, depthBuffer: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+  const dofRT = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType, depthBuffer: false });
+  const bloom = new UnrealBloomPass(new THREE.Vector2(320, 180), P.bloom, P.bloomRadius, P.bloomThreshold);
+  bloom.blendMaterial.visible = false;          // don't add onto dofRT: the final pass adds the bloom to both branches
+  // prefilter: soft knee instead of a hard cut (no popping), and blue-dominant light (the spear arc, the one cool
+  // light in a warm frame) passes at a lower threshold so the arc glows like the concept's without blooming the sand
+  const hp = bloom.materialHighPassFilter;
+  hp.uniforms.smoothWidth.value = P.bloomKnee;
+  hp.uniforms.uCool = { value: P.bloomCool };
+  hp.fragmentShader = /* glsl */`
+    uniform sampler2D tDiffuse; uniform float luminosityThreshold, smoothWidth, uCool;
+    varying vec2 vUv;
+    void main() {
+      vec3 c = texture2D(tDiffuse, vUv).rgb;
+      float cool = clamp((c.b - c.r) / max(c.b, 1e-3), 0.0, 1.0);
+      float v = luminance(c) * (1.0 + uCool * cool);
+      gl_FragColor = vec4(min(c, vec3(1.6)) * smoothstep(luminosityThreshold, luminosityThreshold + smoothWidth, v), 1.0);   // capped: stacked trails glow, never flare over the hero
+    }`;
+  // bloom keeps its source's hue (orange fire → orange halo, blue arc → blue halo); the wide mips lean only a little
+  // warm, the grade already carries the golden hour. The two widest mips are faint: at full weight a large bright mass
+  // (the Musou payoff's dragon + light shards) spread into a screen-wide pale-blue veil; light stays a local glow.
+  bloom.bloomTintColors = [v3([0.95, 1, 1.08]), v3([1, 0.97, 0.93]), v3([0.45, 0.42, 0.39]), v3([0.12, 0.11, 0.1]), v3([0.03, 0.026, 0.023])];
+  const dofU = { uFocus: { value: 7 }, uNearScale: { value: 1 }, uFarScale: { value: 1 }, uBandN: { value: 3 }, uBandF: { value: 5 } };   // shared by dof + final
+  const atmos = new FullScreenQuad(mat(AtmosShader, {
+    tColor: { value: sceneRT.texture }, tDepth: { value: sceneRT.depthTexture },
+    uProjInv: { value: new THREE.Matrix4() }, uCamWorld: { value: new THREE.Matrix4() },
+    uSunDir: { value: SUN_DIR }, uCamPos: { value: new THREE.Vector3() },
+  }));
+  const dof = new FullScreenQuad(mat(DofShader, { tAtmos: { value: atmosRT.texture }, uTexel: { value: new THREE.Vector2() }, ...dofU }));
+  // Lottes curve constants: tmMidIn → tmMidOut and tmMax → 1
+  const ta = P.tmContrast, ad = ta * P.tmShoulder, mi = P.tmMidIn, mo = P.tmMidOut, hm = P.tmMax, den = (hm ** ad - mi ** ad) * mo;
+  const fin = new FullScreenQuad(mat(FinalShader, {
+    tSharp: { value: atmosRT.texture }, tDof: { value: dofRT.texture }, tBloom: { value: bloom.renderTargetsHorizontal[0].texture },
+    uRes: { value: new THREE.Vector2(1280, 720) }, uTime: { value: 0 }, uFlash: { value: 0 },
+    uTmB: { value: (hm ** ta * mo - mi ** ta) / den }, uTmC: { value: (hm ** ad * mi ** ta - hm ** ta * mi ** ad * mo) / den }, ...dofU,
+  }));
 
   function setSize(w, h) {
     renderer.setSize(w, h, false);
-    if (!enabled) return;
     const hw = Math.round(w / 2), hh = Math.round(h / 2);
     sceneRT.setSize(w, h); atmosRT.setSize(w, h); dofRT.setSize(hw, hh);
     bloom.setSize(hw, hh);
@@ -230,45 +224,30 @@ export function createPost({ canvas, enabled = true, width, height }) {
   }
   setSize(width, height);
 
-  let flash = 0;
   return {
-    renderer, bloom, enabled,
     setSize,
-    flash(v) { flash = v; },
-    /** focus: world point the camera frames (hero) → DoF focus plane; sunDir: world sun direction → haze glow. */
-    render(scene, camera, time = 0, focus = null, sunDir = null) {
-      renderer.info.reset();
-      if (!enabled) { renderer.render(scene, camera); return; }
+    /** focus: world point the camera frames (hero) → DoF focus plane; flash: white screen flash (0..1). */
+    render(scene, camera, time, focus, flash) {
       renderer.setRenderTarget(sceneRT);
       renderer.render(scene, camera);
 
       const a = atmos.material.uniforms;
-      syncP(a);
       a.uProjInv.value.copy(camera.projectionMatrixInverse);
       a.uCamWorld.value.copy(camera.matrixWorld);
       a.uCamPos.value.copy(camera.position);
-      if (sunDir) a.uSunDir.value.copy(sunDir);
       renderer.setRenderTarget(atmosRT); atmos.render(renderer);
 
-      const f = focus ? camera.position.distanceTo(focus) : 7;
+      const f = camera.position.distanceTo(focus);
       const u = dof.material.uniforms;
-      syncP(u);
       u.uFarScale.value = THREE.MathUtils.clamp(7 / f, 1, 3);   // close-ups: stronger background bokeh
       u.uNearScale.value = THREE.MathUtils.clamp(8 / f, 0.25, 1);   // wide/high shots: no tilt-shift miniature at the bottom
       u.uFocus.value = f; u.uBandN.value = Math.max(P.bandNear, f * 0.22); u.uBandF.value = Math.max(P.bandFar, f * 0.6);
       renderer.setRenderTarget(dofRT); dof.render(renderer);
 
-      bloom.strength = P.bloom; bloom.radius = P.bloomRadius; bloom.threshold = P.bloomThreshold;
-      bloom.highPassUniforms.smoothWidth.value = P.bloomKnee; bloom.highPassUniforms.uCool.value = P.bloomCool;
       bloom.render(renderer, null, dofRT, 1 / 60, false);
 
       const g = fin.material.uniforms;
-      syncP(g);
       g.uTime.value = time; g.uFlash.value = flash;
-      // Lottes curve constants: tmMidIn → tmMidOut and tmMax → 1
-      const ta = P.tmContrast, ad = ta * P.tmShoulder, mi = P.tmMidIn, mo = P.tmMidOut, hm = P.tmMax, den = (hm ** ad - mi ** ad) * mo;
-      g.uTmB.value = (hm ** ta * mo - mi ** ta) / den;
-      g.uTmC.value = (hm ** ad * mi ** ta - hm ** ta * mi ** ad * mo) / den;
       renderer.setRenderTarget(null); fin.render(renderer);
     },
   };

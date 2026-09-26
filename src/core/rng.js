@@ -1,7 +1,7 @@
 // Seeded deterministic RNG (mulberry32).
-// `rng`  → simulation randomness only (reseeded by every scenario reset).
+// `rng`  → simulation randomness only.
 // `vrng` → visual-only randomness (particles, shake, grain). Never feed it back into the sim.
-export function makeRng(seed = 1) {
+export function makeRng(seed) {
   let s = seed >>> 0;
   const r = {
     seed(n) { s = n >>> 0; },
@@ -14,9 +14,7 @@ export function makeRng(seed = 1) {
     },
     range(a, b) { return a + (b - a) * r.next(); },
     int(a, b) { return a + Math.floor((b - a + 1) * r.next()); },
-    pick(arr) { return arr[Math.floor(r.next() * arr.length)]; },
     chance(p) { return r.next() < p; },
-    get state() { return s; },
   };
   return r;
 }

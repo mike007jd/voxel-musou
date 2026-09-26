@@ -18,9 +18,9 @@ export function noiseBuf() {
   return NOISE;
 }
 
-/** Stereo reverb impulse: decaying noise that darkens over time (shared by the runtime convolver and the bed). */
-export function makeIR(sec = 1.6, decay = 3.2) {
-  const n = Math.floor(sec * SR), b = new AudioBuffer({ length: n, sampleRate: SR, numberOfChannels: 2 });
+/** Stereo reverb impulse for the runtime convolver: 1.5 s of decaying noise that darkens over time. */
+export function makeIR() {
+  const sec = 1.5, decay = 3.4, n = Math.floor(sec * SR), b = new AudioBuffer({ length: n, sampleRate: SR, numberOfChannels: 2 });
   for (let c = 0; c < 2; c++) {
     const d = b.getChannelData(c);
     let lp = 0;
@@ -122,7 +122,7 @@ const BW = [95, 120, 170, 260], FG = [1, 0.8, 0.42, 0.22];
  */
 function voice(oc, dst, o) {
   const t = o.t || 0, k = o.k || 1, fk = o.fk || 1;
-  const len = o.amp[o.amp.length - 1][0] + 0.03, end = t + len;
+  const len = o.amp[o.amp.length - 1][0] + 0.03;
   const f0 = o.f0.map(([u, f]) => [u, f * k]);
   const src = env(oc, t, o.amp);
   const g1 = osc(oc, 'sawtooth', t, len); pts(g1.frequency, t, f0, true);
@@ -156,7 +156,6 @@ function voice(oc, dst, o) {
       .connect(env(oc, t, [[0, 0], [ft, 0], [ft + 0.006, fg], [ft + fd, 0]])).connect(out);
   }
   out.connect(dst);
-  return end;
 }
 
 // Zhao Yun's kiai lines (seconds from the cue; the vowel peak lands ≈ 50-70 ms in, on the first trail frame)
@@ -190,28 +189,28 @@ const HERO_EXTRA = {
     asp: [[0, 0], [0.01, 0.8], [0.03, 0]], growl: 0.1 },
 };
 
-function grunt(oc, dst, t = 0, b = rnd(118, 168)) {
-  const d = rnd(0.12, 0.22), v = pick(['A', 'u', 'o', 'a']);
-  return voice(oc, dst, { t, f0: [[0, b], [0.03, b * 1.12], [d, b * 0.72]], vow: [[0, v], [d, v]],
+function grunt(oc, dst) {
+  const b = rnd(118, 168), d = rnd(0.12, 0.22), v = pick(['A', 'u', 'o', 'a']);
+  voice(oc, dst, { f0: [[0, b], [0.03, b * 1.12], [d, b * 0.72]], vow: [[0, v], [d, v]],
     amp: [[0, 0], [0.018, 1], [d * 0.6, 0.6], [d, 0]], fric: Math.random() < 0.5 ? [0, 0.016, 0.8, 1300] : null,
     asp: [[0, 0], [0.01, 0.6], [0.03, 0]], growl: rnd(0.3, 0.6), fk: rnd(0.9, 1.0) });
 }
 function cry(oc, dst, t = 0, b = rnd(135, 215), gainV = 1) {
   const d = rnd(0.38, 0.7), seq = pick([['u', 'a', 'a'], ['a', 'a', 'o'], ['A', 'a', 'A'], ['o', 'a', 'a'], ['i', 'a', 'A']]);
-  return voice(oc, dst, { t, gain: gainV, f0: [[0, b], [0.07, b * 1.28], [0.2, b * 1.18], [d, b * 0.62]],
+  voice(oc, dst, { t, gain: gainV, f0: [[0, b], [0.07, b * 1.28], [0.2, b * 1.18], [d, b * 0.62]],
     vow: [[0, seq[0]], [0.08, seq[1]], [d, seq[2]]], amp: [[0, 0], [0.03, 0.9], [0.1, 1], [d * 0.7, 0.7], [d, 0]],
     fric: Math.random() < 0.5 ? [0, 0.02, 0.8, 1500] : null, asp: [[0, 0], [0.012, 0.5], [0.04, 0]], growl: rnd(0.35, 0.65),
     jit: 0.05, fk: rnd(0.88, 1.02) });
 }
-function crowdVoice(oc, dst, t, b = rnd(140, 260), d = rnd(0.5, 1.4), gainV = 1) {
+function crowdVoice(oc, dst, t, b = rnd(140, 260), d = rnd(0.5, 1.4)) {
   const v = pick(['a', 'o', 'A', 'a', 'e']);
-  return voice(oc, dst, { t, gain: gainV, f0: [[0, b * 0.9], [0.15, b * 1.1], [d * 0.7, b * 1.05], [d, b * 0.8]],
+  voice(oc, dst, { t, f0: [[0, b * 0.9], [0.15, b * 1.1], [d * 0.7, b * 1.05], [d, b * 0.8]],
     vow: [[0, pick(['u', 'o', 'A'])], [0.14, v], [d, v]], amp: [[0, 0], [0.12, 1], [d * 0.75, 0.85], [d, 0]],
     growl: rnd(0.2, 0.5), jit: 0.05, fk: rnd(0.9, 1.05) });
 }
 
 // ---- whooshes: body band sweep + high "tear" + narrow spear whistle (+ sub for heavy)
-function whoosh(oc, dst, { dur = 0.25, lo = 500, hi = 2200, pk = 0.45, q = 1.4, tear = 0.4, whistle = 0.2, sub = 0, pulses = 0 }) {
+function whoosh(oc, dst, { dur, lo, hi, pk, q, tear, whistle, sub = 0, pulses = 0 }) {
   const shape = (u) => {
     let e = u < pk ? (u / pk) ** 1.3 : (1 - (u - pk) / (1 - pk)) ** 1.7;   // quick rise: the whoosh reads from its first frames
     if (pulses) e *= 0.3 + 0.7 * Math.sin(Math.PI * u * pulses) ** 2;

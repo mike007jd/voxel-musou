@@ -22,8 +22,8 @@ import { emit } from '../core/events.js';
 import { WALL_Z } from '../world/world.js';
 
 export const ST = { OFF: 0, IDLE: 1, ADVANCE: 2, GUARD: 3, ATTACK: 4, HURT: 5, KNOCK: 6, AIR: 7, DOWN: 8, GETUP: 9, DEAD: 10 };
-export const isReacting = (s) => s >= ST.HURT && s <= ST.GETUP;
-export const isAlive = (s) => s !== ST.OFF && s !== ST.DEAD;
+const isReacting = (s) => s >= ST.HURT && s <= ST.GETUP;
+export const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 /** Visual/role kind (type stays 0 grunt / 1 officer for combat). */
 export const KIND = { SPEAR: 0, SWORD: 1, CAPTAIN: 2, BEARER: 3, OFFICER: 4 };
 const SQ_HOLD = 1, SQ_MARCH = 2, SQ_HALT = 3, SQ_CHARGE = 4;
@@ -38,7 +38,7 @@ export const CROWD = {
   strikeGap: [[40, 90], [30, 80]],                            // next start after 40-90 sf (hero calm) / 30-80 (he attacks)
   grace: [150, 240], rally: [3, 5], rallyTime: 44,             // feints for 2.5-4 s after a blow lands; guards raising
   windup: 40, strike: 40, recover: 24, cooldown: [110, 260], officerCd: [40, 90],  // strike lands 0.67 s after wind-up starts
-  dmg: 10, officerDmg: 22, hp: 30, captainHp: 80, officerHp: 520,
+  hp: 30, captainHp: 80, officerHp: 520,
   deadTime: 210, fieldR: 62,
   engaged: 84, transit: 72,                                   // director target: soldiers on the hero; cap on blocks en route
   halt: 15, haltFrames: 36, fold: 7.5,                        // squad: halt at 15 m, then charge, fold at 7.5 m
@@ -48,18 +48,19 @@ const DT = 1 / 60;
 const CELL = 1.2, GRID = 128, HALF = GRID * CELL / 2;
 const MAXSQ = 64;
 
-export function createCrowd(game, grunts = 300) {
+export function createCrowd(game, grunts) {
   const N = grunts + CROWD.officers;
   const F = (n = N) => new Float64Array(n), I = (n = N) => new Int32Array(n);
   const c = {
     N, grunts,
     x: F(), z: F(), y: F(), vx: F(), vz: F(), vy: F(), yaw: F(), hp: F(), hpMax: F(),
     st: I(), stT: I(), type: I(), kind: I(), token: I(), cd: I(), hs: I(), flash: I(),
-    rx: F(), rxV: F(), spinV: F(), pref: F(), band: I(), aggro: F(), phase: F(), hurtDur: I(), bounce: I(),
+    rx: F(), rxV: F(), spinV: F(), pref: F(), band: I(), phase: F(), hurtDur: I(), bounce: I(),
     lastHit: I(), strafe: F(), kod: I(), tokT: I(), ang: F(), seated: I(),
     squad: I(), slotX: F(), slotZ: F(), form: I(),
     sq: { x: F(MAXSQ), z: F(MAXSQ), face: F(MAXSQ), st: I(MAXSQ), t: I(MAXSQ), n: 0 },
     raiseF: I(), feint: I(), wind: I(),                         // raiseF: rallying until (render + ring surge); feint strike; winding up
+    hitHeavy: I(),                                              // last hit was heavy (set by combat, read by hitfx.js)
     waveT: 0, tokensUsed: 0, strikeF: 0, gap: 0, graceF: 0, heroHp: 0, wavesOn: false, engaged: 0,
   };
   const head = new Int32Array(GRID * GRID), next = new Int32Array(N);
@@ -79,13 +80,11 @@ export function createCrowd(game, grunts = 300) {
     const r = rng.next();
     if (kind === KIND.BEARER) { c.band[i] = 2; c.pref[i] = rng.range(7, 11); }
     else setBand(i, off ? 0 : r < CROWD.share[0] ? 0 : r < CROWD.share[1] ? 1 : 2);
-    c.aggro[i] = off ? CROWD.officerAggro : CROWD.aggro;
     c.phase[i] = rng.range(0, 6.28);
     c.strafe[i] = rng.chance(0.5) ? 1 : -1;
     c.squad[i] = -1; c.form[i] = 0;
   }
   function setBand(i, k) { c.band[i] = k; c.pref[i] = rng.range(CROWD.bands[k][0], CROWD.bands[k][1]); c.seated[i] = 0; }
-  const gruntKind = () => { const r = rng.next(); return r < 0.05 ? KIND.CAPTAIN : r < 0.42 ? KIND.SWORD : KIND.SPEAR; };
 
   c.reset = () => {
     c.st.fill(ST.OFF); c.token.fill(0); c.tokensUsed = 0; c.strikeF = 0; c.gap = 0; c.graceF = 0; c.heroHp = game.hero.hp; c.waveT = 0; c.sq.n = 0; c.wavesOn = false;
@@ -99,11 +98,11 @@ export function createCrowd(game, grunts = 300) {
   }
 
   /** New squad at (sx, sz) facing `face`; members fill a block `cols` wide, 1.15 m apart; bearer ahead, captain on
-   *  the front-left. Returns the squad id (or -1 when the table is full). */
+   *  the front-left. Does nothing when the table is full. */
   function makeSquad(slots, sx, sz, face, cols, st) {
     let q = -1;
     for (let k = 0; k < c.sq.n; k++) if (!c.sq.st[k]) { q = k; break; }
-    if (q < 0) { if (c.sq.n >= MAXSQ) return -1; q = c.sq.n++; }
+    if (q < 0) { if (c.sq.n >= MAXSQ) return; q = c.sq.n++; }
     c.sq.x[q] = sx; c.sq.z[q] = sz; c.sq.face[q] = face; c.sq.st[q] = st; c.sq.t[q] = 0;
     const sn = Math.sin(face), cs = Math.cos(face);
     const rows = Math.ceil((slots.length - 1) / cols);
@@ -113,81 +112,51 @@ export function createCrowd(game, grunts = 300) {
       else {
         const m = k - 1, r = Math.floor(m / cols), q2 = m % cols;
         lx = (q2 - (cols - 1) / 2) * 1.15 + rng.range(-0.12, 0.12); lz = -r * 1.15 + rng.range(-0.12, 0.12) + (rows - 1) * 0.3;
-        kind = m === 0 ? KIND.CAPTAIN : gruntKind();
-        if (kind === KIND.CAPTAIN && m !== 0) kind = KIND.SPEAR;
+        const g = m ? rng.next() : 0;
+        kind = !m ? KIND.CAPTAIN : g >= 0.05 && g < 0.42 ? KIND.SWORD : KIND.SPEAR;
       }
       place(i, sx + lx * cs + lz * sn, sz - lx * sn + lz * cs, false, kind);
       c.squad[i] = q; c.slotX[i] = lx; c.slotZ[i] = lz; c.form[i] = 1;
       c.yaw[i] = face;
       if (st !== SQ_HOLD) c.st[i] = ST.ADVANCE;
     });
-    return q;
   }
 
-  /** Squads spread over the field around (cx, cz): the default army layout. One big block waits in front of the
+  /** Squads spread over the field around the origin: the default army layout. One big block waits in front of the
    *  camera (toward the castle), most other squads stand on that side too, a few flank and close the rear. */
-  c.spawnArmy = (count = grunts, cx = 0, cz = 0, near = 7) => {
+  c.spawnArmy = () => {
     c.wavesOn = true;
-    const slots = freeSlots(false).slice(0, count);
+    const slots = freeSlots(false);
     const fwd = game.cam.yaw;
     let k = 0, n = 0;
     while (k < slots.length) {
       const big = n === 0 && slots.length >= 120;
       const size = Math.min(slots.length - k, big ? rng.int(50, 60) : rng.int(18, 30));
       const a = big ? fwd + rng.range(-0.25, 0.25) : n % 3 === 2 ? fwd + Math.PI + rng.range(-1.4, 1.4) : fwd + rng.range(-1.8, 1.8);
-      const d = big ? rng.range(24, 28) : rng.range(near + 4, 34);
-      let sx = cx + Math.sin(a) * d, sz = cz + Math.cos(a) * d;
-      sz = Math.min(sz, WALL_Z - 6);
-      const face = Math.atan2(cx - sx, cz - sz);
+      const d = big ? rng.range(24, 28) : rng.range(11, 34);
+      const sx = Math.sin(a) * d, sz = Math.min(Math.cos(a) * d, WALL_Z - 6);
+      const face = Math.atan2(-sx, -sz);
       makeSquad(slots.slice(k, k + size), sx, sz, face, big ? 10 : Math.max(4, Math.round(Math.sqrt(size * 1.6))), SQ_HOLD);
       k += size; n++;
     }
     for (const i of freeSlots(true)) {
       const a = rng.range(0, Math.PI * 2), d = rng.range(12, 30);
-      place(i, cx + Math.cos(a) * d, cz + Math.sin(a) * d, false);
+      place(i, Math.cos(a) * d, Math.sin(a) * d, false);
     }
   };
 
-  /** Ring of engaged soldiers around the hero (crowd-fight / musou scenarios, debug.spawnRing). */
-  c.spawnRing = (count, radius) => {
-    c.wavesOn = true;
-    const slots = freeSlots(false).slice(0, count);
-    const hx = game.hero.x, hz = game.hero.z;
-    slots.forEach((i, k) => {
-      const ring = Math.floor(k / 24), a = (k % 24) / 24 * Math.PI * 2 + ring * 0.13;
-      const d = radius + ring * 1.1 + rng.range(-0.2, 0.2);
-      place(i, hx + Math.cos(a) * d, hz + Math.sin(a) * d, true, k % 23 === 11 ? KIND.BEARER : gruntKind());
-    });
-  };
-
-  c.clear = () => { c.st.fill(ST.OFF); c.token.fill(0); c.tokensUsed = 0; c.sq.n = 0; };
-
-  /** Nearest alive enemy within maxR whose bearing is within `cone` radians of `yaw` (or any if cone >= π). */
-  c.nearest = (x, z, maxR, yaw = 0, cone = Math.PI) => {
+  /** Nearest alive enemy within maxR whose bearing is within `cone` radians of `yaw`. */
+  c.nearest = (x, z, maxR, yaw, cone) => {
     let best = -1, bd = maxR * maxR;
     for (let i = 0; i < N; i++) {
       const s = c.st[i];
       if (s === ST.OFF || s === ST.DEAD) continue;
       const dx = c.x[i] - x, dz = c.z[i] - z, d2 = dx * dx + dz * dz;
       if (d2 >= bd) continue;
-      if (cone < Math.PI) {
-        let da = Math.atan2(dx, dz) - yaw; da = Math.atan2(Math.sin(da), Math.cos(da));
-        if (Math.abs(da) > cone) continue;
-      }
+      if (Math.abs(wrap(Math.atan2(dx, dz) - yaw)) > cone) continue;
       bd = d2; best = i;
     }
     return best;
-  };
-
-  c.counts = () => {
-    let alive = 0, active = 0;
-    for (let i = 0; i < N; i++) {
-      const s = c.st[i];
-      if (s === ST.OFF || s === ST.DEAD) continue;
-      alive++;
-      if (s !== ST.IDLE) active++;
-    }
-    return { alive, active };
   };
 
   function releaseToken(i) { if (c.token[i]) { c.token[i] = 0; c.tokensUsed--; } }
@@ -234,17 +203,17 @@ export function createCrowd(game, grunts = 300) {
         if (e > 0.06) { const sp = Math.min(cap, e * 4); vx = ex / e * sp; vz = ez / e * sp; }
         turn(i, f, 3);
         if (s === ST.IDLE && c.sq.st[q] > SQ_HOLD) setSt(i, ST.ADVANCE);  // the block got its orders
-        else if (s === ST.IDLE && d < c.aggro[i]) c.sq.st[q] = SQ_CHARGE;   // hero walked into the block: it charges
+        else if (s === ST.IDLE && d < (c.type[i] ? CROWD.officerAggro : CROWD.aggro)) c.sq.st[q] = SQ_CHARGE;   // hero walked into the block: it charges
       } else if (s === ST.IDLE) {
-        if (d < c.aggro[i]) setSt(i, ST.ADVANCE);
+        if (d < (c.type[i] ? CROWD.officerAggro : CROWD.aggro)) setSt(i, ST.ADVANCE);
         turn(i, face, 1.5);
       } else if (s === ST.ATTACK) {
         const t = c.stT[i];
         turn(i, face, t < CROWD.windup - 8 ? CROWD.turn : 0);
         if (t === CROWD.strike) {
           c.wind[i] = 0;
-          if (!c.feint[i]) game.combat.enemyStrike(i);
-          else emit('enemy:attack', { i, x: c.x[i], y: 1.1, z: c.z[i], officer: c.type[i] === 1, feint: 1 });   // a swing at the air
+          emit('enemy:attack', { x: c.x[i], z: c.z[i], officer: c.type[i] === 1 });
+          if (!c.feint[i]) game.combat.enemyStrike(i);                 // a feint swings at the air
         }
         // creep into reach (a feint stops a pace short: the blow cuts the air in front of him)
         const reach = c.feint[i] ? 2.45 : CROWD.attackRange - 0.2;
@@ -282,8 +251,7 @@ export function createCrowd(game, grunts = 300) {
         if (tA === tA) {
           // walk round the hero (≤ 0.45 rad per look-ahead) instead of through the fight
           const ra = Math.atan2(-dx, -dz);
-          let da = tA - ra; da = Math.atan2(Math.sin(da), Math.cos(da));
-          const ta = ra + Math.max(-0.45, Math.min(0.45, da));
+          const ta = ra + Math.max(-0.45, Math.min(0.45, wrap(tA - ra)));
           tx = h.x + Math.sin(ta) * want - c.x[i]; tz = h.z + Math.cos(ta) * want - c.z[i]; e = Math.hypot(tx, tz);
         }
         let faceTo = face;
@@ -334,24 +302,18 @@ export function createCrowd(game, grunts = 300) {
 
   /** A strike starts: the guards nearest the striker raise their weapons and shout with him (DW9: 4-5 of ~30 raise
    *  together), and surge half a step in. The view reads raiseF for the war-cry pose. */
-  const rallyI = new Int32Array(8), rallyD = new Float64Array(8);
   function rally(s) {
-    const k = rng.int(CROWD.rally[0], CROWD.rally[1]);
-    let n = 0;
+    const k = rng.int(CROWD.rally[0], CROWD.rally[1]), near = [];
     for (let j = 0; j < N; j++) {
       if (j === s || c.st[j] !== ST.GUARD || c.token[j] || c.form[j] || c.kind[j] === KIND.BEARER) continue;
       const d2 = (c.x[j] - c.x[s]) ** 2 + (c.z[j] - c.z[s]) ** 2;
-      if (d2 > 30 || (n === k && d2 >= rallyD[n - 1])) continue;
-      let m = n < k ? n++ : n - 1;                             // insertion into the k nearest
-      while (m > 0 && rallyD[m - 1] > d2) { rallyD[m] = rallyD[m - 1]; rallyI[m] = rallyI[m - 1]; m--; }
-      rallyD[m] = d2; rallyI[m] = j;
+      if (d2 <= 30) near.push([d2, j]);
     }
-    for (let m = 0; m < n; m++) c.raiseF[rallyI[m]] = game.frame + CROWD.rallyTime - m * 3;
+    near.sort((a, b) => a[0] - b[0]).slice(0, k).forEach(([, j], m) => { c.raiseF[j] = game.frame + CROWD.rallyTime - m * 3; });
   }
 
   function turn(i, target, rate) {
-    let d = target - c.yaw[i]; d = Math.atan2(Math.sin(d), Math.cos(d));
-    const m = rate * DT;
+    const d = wrap(target - c.yaw[i]), m = rate * DT;
     c.yaw[i] += Math.max(-m, Math.min(m, d));
   }
 
@@ -379,7 +341,7 @@ export function createCrowd(game, grunts = 300) {
       const dx = h.x - S.x[q], dz = h.z - S.z[q], d = Math.hypot(dx, dz) || 1e-6;
       if (S.st[q] === SQ_HOLD) { if (d < holdD) { holdD = d; holdBest = q; } continue; }
       // wheel toward the hero (limited turn rate → the block visibly pivots)
-      let da = Math.atan2(dx, dz) - S.face[q]; da = Math.atan2(Math.sin(da), Math.cos(da));
+      const da = wrap(Math.atan2(dx, dz) - S.face[q]);
       S.face[q] += Math.max(-1.1 * DT, Math.min(1.1 * DT, da));
       let sp = 0;
       if (S.st[q] === SQ_MARCH) { sp = CROWD.march; if (d < CROWD.halt) { S.st[q] = SQ_HALT; S.t[q] = 0; } }
@@ -424,11 +386,11 @@ export function createCrowd(game, grunts = 300) {
     // seat the inner ring: new members take the emptiest slots; up to 4 soldiers from a doubled-up slot move to an
     // empty one per tick (a gap left by a sweep fills from both sides)
     secN.fill(0);
-    for (let i = 0; i < N; i++) if (!c.band[i] && c.seated[i] && ok(i)) secN[secOf(Math.atan2(Math.sin(c.ang[i]), Math.cos(c.ang[i])))]++;
+    for (let i = 0; i < N; i++) if (!c.band[i] && c.seated[i] && ok(i)) secN[secOf(wrap(c.ang[i]))]++;
     for (let i = 0; i < N; i++) if (!c.band[i] && !c.seated[i] && ok(i)) seat(i, h);
     for (let i = 0, moves = 0; i < N && moves < 4 && secN.includes(0); i++) {
       if (c.band[i] || !c.seated[i] || !ok(i) || c.token[i]) continue;
-      const s0 = secOf(Math.atan2(Math.sin(c.ang[i]), Math.cos(c.ang[i])));
+      const s0 = secOf(wrap(c.ang[i]));
       if (secN[s0] < 2) continue;
       secN[s0]--; seat(i, h); moves++;
     }
@@ -552,7 +514,7 @@ export function createCrowd(game, grunts = 300) {
     makeSquad(off.slice(0, n), sx, sz, Math.atan2(h.x - sx, h.z - sz), 3, SQ_CHARGE);   // a column that runs straight in
     // KO'd officers come back with the waves
     for (const i of freeSlots(true)) { place(i, sx + rng.range(-2, 2), sz + rng.range(-2, 2), true); break; }
-    emit('crowd:wave', { count: n, x: sx, z: sz });
+    emit('crowd:wave', { x: sx, z: sz });
   }
 
   return c;

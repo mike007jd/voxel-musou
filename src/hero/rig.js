@@ -16,7 +16,6 @@ export const DIM = {
   thigh: 0.44, shin: 0.44, upper: 0.29, fore: 0.27,
   spine: 0.12, chest: 0.2, neck: 0.24, headUp: 0.04,
   shoulderX: 0.235, shoulderY: 0.2, hipX: 0.11, hipY: -0.05,
-  spearTip: 1.95, spearButt: -0.72, spearHead: 1.6,
 };
 
 /** Uniform view scale of the posed hero (≈ 1.85 m). The rig poses and solves IK at scale 1 in pose units; hero.js then
@@ -62,27 +61,14 @@ export function P(spec = {}, base = STANCE) {
   return o;
 }
 
-/** Rotate a pose spec about the root Y axis by `deg` (spins, turning steps). Returns a new spec. */
-export function rotSpec(spec, deg, base = STANCE) {
-  const s = { ...base, ...spec };
-  const a = deg * D2R, c = Math.cos(a), sn = Math.sin(a);
-  const rp = (p) => [p[0] * c + p[2] * sn, p[1], -p[0] * sn + p[2] * c];
-  return {
-    ...s,
-    hips: rp(s.hips), hipsR: [s.hipsR[0], s.hipsR[1] + deg, s.hipsR[2]],
-    footL: [...rp(s.footL), s.footL[3], s.footL[4] + deg], footR: [...rp(s.footR), s.footR[3], s.footR[4] + deg],
-    spear: [...rp(s.spear), s.spear[3] + deg, s.spear[4], s.spear[5]],
-  };
-}
-
 /** Spear spec whose shaft passes through `center` (m along shaft from origin = `at`). */
-export function spearAbout(center, yaw, elev, roll = 0, at = 0.9) {
+export function spearAbout(center, yaw, elev, roll, at) {
   const y = yaw * D2R, e = elev * D2R;
   const dx = Math.sin(y) * Math.cos(e), dy = Math.sin(e), dz = Math.cos(y) * Math.cos(e);
   return [center[0] - dx * at, center[1] - dy * at, center[2] - dz * at, yaw, elev, roll];
 }
 
-export const EASE = {
+const EASE = {
   lin: (u) => u,
   in: (u) => u * u,
   out: (u) => 1 - (1 - u) * (1 - u),
@@ -129,20 +115,19 @@ export function sampleClip(c, t, out) {
   return out;
 }
 
+const wrapA = (a) => a - Math.round(a / (2 * Math.PI)) * 2 * Math.PI;
 /** Blend two poses; angle channels take the shortest way round (a spin ending at 360 blends cleanly into 0). */
 export function blendPose(a, b, w, out) {
   for (let j = 0; j < POSE_SIZE; j++) {
-    let d = b[j] - a[j];
-    if (IS_ANGLE[j]) d -= Math.round(d / (2 * Math.PI)) * 2 * Math.PI;
-    out[j] = a[j] + d * w;
+    const d = b[j] - a[j];
+    out[j] = a[j] + (IS_ANGLE[j] ? wrapA(d) : d) * w;
   }
   return out;
 }
 
 // ---------------------------------------------------------------- feet in the hero-facing frame
-const wrapA = (a) => a - Math.round(a / (2 * Math.PI)) * 2 * Math.PI;
 /** Foot `b` (CH.footL / CH.footR) of a pose in the hero-facing frame (ignores `spin`): out = [x, z, yaw]. */
-export function footHero(p, b, out) {
+function footHero(p, b, out) {
   const k = p[CH.plant], sp = p[CH.spin], c = Math.cos(sp), s = Math.sin(sp), x = p[b], z = p[b + 2];
   out[0] = x + (1 - k) * (x * c + z * s - x); out[1] = z + (1 - k) * (-x * s + z * c - z);
   out[2] = p[b + 4] + (1 - k) * wrapA(sp);
@@ -166,7 +151,7 @@ export function turnPose(p, d) {
  * stays put in the world) and lifts on the way when it has to move more than 4 cm — no gliding between moves.
  */
 const _fh = [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]], FEET = [CH.footL, CH.footR];
-export function blendStep(a, b, w, out, dx = 0, dz = 0) {
+export function blendStep(a, b, w, out, dx, dz) {
   for (let i = 0; i < 2; i++) { footHero(a, FEET[i], _fh[i]); footHero(b, FEET[i], _fh[i + 2]); }   // first: b may be `out`
   blendPose(a, b, w, out);
   for (let i = 0; i < 2; i++) {
@@ -186,7 +171,7 @@ const GROUND = 0.03, TIP = 2.0, BUTT = 0.8;            // clearance, blade tip /
  * about the rear grip until it rests on the ground — slams and plunges strike the floor instead of sinking into it.
  * Pure (pose channels + root height), so the renderer and the VFX trail agree.
  */
-export function spearElev(pose, rootY) {
+function spearElev(pose, rootY) {
   let e = pose[29];
   const y0 = pose[26] + (rootY - GROUND) / HERO_SCALE;           // grip height above the clearance plane, pose units
   for (const [len, sgn] of [[BUTT, -1], [TIP, 1]]) {            // tip last: it wins if both can't be satisfied
@@ -226,7 +211,6 @@ function solve2(upper, lower, target, pole, lenA, lenB, ref) {
   _D.subVectors(target, _S);
   let d = _D.length();
   const maxD = (lenA + lenB) * 0.9995;
-  const reachErr = Math.max(0, d - maxD);
   d = Math.min(Math.max(d, Math.abs(lenA - lenB) + 1e-3), maxD);
   _D.normalize();
   const cosA = (lenA * lenA + d * d - lenB * lenB) / (2 * lenA * d);
@@ -238,7 +222,6 @@ function solve2(upper, lower, target, pole, lenA, lenB, ref) {
   _T.copy(_S).addScaledVector(_D, d);
   aimBone(upper, _v4.subVectors(_E, _S), ref || _pole);
   aimBone(lower, _v4.subVectors(_T, _E), ref || _pole);
-  return reachErr;
 }
 
 /** Shaft offset s closest to s0 such that |O + D s - S| <= r (hands slide along the shaft instead of floating). */
@@ -284,8 +267,6 @@ export function createRig() {
   const rig = {
     joints: j,
     root: j.root,
-    reachError: 0,          // debug: how far a hand target was beyond reach last apply (m)
-    grips: { R: 0, L: 0 },  // actual shaft offsets used by the hands last apply
     /** Pose the rig. pos = world position of the root (ground under the hero), yaw = facing. */
     apply(pose, pos, yaw) {
       const R = j.root;
@@ -323,7 +304,7 @@ export function createRig() {
       spearDir.set(0, 0, 1).applyQuaternion(spearQ);
 
       // --- arms: right hand on the shaft; left on the shaft or FK (blended by lfree)
-      let err = 0;
+      let gR = 0;             // right hand's actual shaft offset (the left keeps clear of it)
       const lfree = pose[33];
       for (const s of ['R', 'L']) {
         const sx = s === 'R' ? -1 : 1;
@@ -331,11 +312,8 @@ export function createRig() {
         up.getWorldPosition(_S);
         const want = s === 'R' ? pose[31] : pose[32];
         let g = reachOnShaft(_S, _O, spearDir, want, reach);
-        if (s === 'L') {                                       // keep the hands apart on the shaft
-          const gr = rig.grips.R;
-          if (Math.abs(g - gr) < 0.12) g = gr + (want >= gr ? 0.12 : -0.12);
-        }
-        rig.grips[s] = g;
+        if (s === 'R') gR = g;
+        else if (Math.abs(g - gR) < 0.12) g = gR + (want >= gR ? 0.12 : -0.12);   // keep the hands apart on the shaft
         gripW.copy(_O).addScaledVector(spearDir, g);
         // elbow pole: out, down and back (chest space)
         _pole.set(sx * 0.7, -0.6, -0.5).applyQuaternion(chestQ);
@@ -348,7 +326,7 @@ export function createRig() {
           gripW.lerp(fkHand, lfree);
           _pole.lerp(_v2.set(sx * 0.5, -0.2, -0.8).applyQuaternion(_q2), lfree);
         }
-        err = Math.max(err, solve2(up, fo, gripW, _pole, DIM.upper, DIM.fore, _v3.copy(_pole).negate()));
+        solve2(up, fo, gripW, _pole, DIM.upper, DIM.fore, _v3.copy(_pole).negate());
         // hand: fist wraps the shaft (local Z along the spear)
         fo.getWorldQuaternion(_q2);
         _q.copy(spearQ);
@@ -356,7 +334,6 @@ export function createRig() {
         ha.quaternion.copy(_q2.invert().multiply(_q));
         ha.updateMatrixWorld(true);
       }
-      rig.reachError = err;
 
       // --- legs: knees bend toward the foot's facing
       for (const s of ['L', 'R']) {

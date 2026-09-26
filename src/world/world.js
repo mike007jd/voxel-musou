@@ -54,7 +54,7 @@ export function createWorld(scene) {
   const tmp = new THREE.Vector3();
   let t = 0;
   return {
-    sun, hemi, fires: dressing.fires, banners: dressing.cloths, sunDir: SUN_DIR, lightDir: LIGHT_DIR,
+    fires: dressing.fires,
     update(dt, focus) {
       t += dt;
       // shadow frustum follows the focus (snapped to texels to avoid shimmer)

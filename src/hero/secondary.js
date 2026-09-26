@@ -13,7 +13,7 @@ const _x = new THREE.Vector3(), _y = new THREE.Vector3(), _z = new THREE.Vector3
 const _c = new THREE.Vector3(), _d = new THREE.Vector3();
 const B = (a, b, c) => ({ a, b, c });
 
-function chain(scene, mat, joint, { anchor, rest, n, len, seg, stiff = 0.12, drag = 0.08, grav = 1, wind = 1, face = [0, 0, -1], hit = [], cone = 100, sway = 0 }) {
+function chain(scene, mat, joint, { anchor, rest, n, len, seg, stiff = 0.12, drag = 0.08, wind = 1, face = [0, 0, -1], hit = [], cone = 100, sway = 0 }) {
   const meshes = [];
   for (let i = 0; i < n; i++) {
     const m = new THREE.Mesh(seg(i, n), mat);
@@ -29,7 +29,6 @@ function chain(scene, mat, joint, { anchor, rest, n, len, seg, stiff = 0.12, dra
   let init = false;
   const ph = anchor[0] * 7 + anchor[1] * 3 + n;                   // per-chain gust phase
   return {
-    meshes, p,
     reset() { init = false; },
     /** cols: { name: {c: Vector3, r} } — this chain collides with the ones listed in `hit` (name or [name, extraR]). */
     update(dt, t, cols, back) {
@@ -57,7 +56,7 @@ function chain(scene, mat, joint, { anchor, rest, n, len, seg, stiff = 0.12, dra
           _t.subVectors(p[i], o[i]).multiplyScalar(1 - drag);
           o[i].copy(p[i]);
           p[i].add(_t);
-          p[i].y -= 9.8 * grav * h * h;
+          p[i].y -= 9.8 * h * h;
           // wind streams behind the hero with slow gusts and a lateral sway
           const g = 0.75 + 0.45 * Math.sin(t * 1.7 + i * 0.6) + 0.25 * Math.sin(t * 4.3 + i * 1.3);
           const w = wind * g * 5 * h * h * i / n;
@@ -174,7 +173,7 @@ function tasselSeg(i, n) {
 export function createSecondary(scene, rig, mat) {
   const j = rig.joints;
   const chains = [];
-  const add = (joint, o) => { const c = chain(scene, mat, joint, o); chains.push(c); return c; };
+  const add = (joint, o) => chains.push(chain(scene, mat, joint, o));
   // heaviest → lightest
   add(j.chest, { anchor: [0, 0.255, -0.16], rest: [0, -1, 0.15], n: 6, len: 0.17, stiff: 0.16, drag: 0.22, wind: 1.1, cone: 80, sway: 0.2,
     seg: capeSeg, hit: ['chest', 'hips', 'thighL', 'thighR', 'kneeL', 'kneeR'] });
@@ -199,17 +198,14 @@ export function createSecondary(scene, rig, mat) {
   const back = new THREE.Vector3(), _bq = new THREE.Quaternion(), DOWN = new THREE.Vector3(0, -1, 0);
   let t = 0;
   return {
-    chains,
     reset() { for (const c of chains) c.reset(); },
     update(dt) {
       t += dt;
       // pauldrons: swing (no twist) halfway toward the upper arm's direction, in shoulder (= chest) space
       for (const s of ['L', 'R']) {
-        const pd = j['pauldron' + s];
-        if (!pd) continue;
         _d.set(0, -1, 0).applyQuaternion(j['upperArm' + s].quaternion);
         _q.setFromUnitVectors(DOWN, _d);
-        pd.quaternion.identity().slerp(_q, 0.5);
+        j['pauldron' + s].quaternion.identity().slerp(_q, 0.5);
       }
       j.root.updateMatrixWorld(true);
       setCol('head', j.head, 0, 7 * HV, 0, 7.4 * HV);

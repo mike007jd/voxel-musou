@@ -7,7 +7,8 @@ import * as THREE from 'three';
 
 // visible sun: 18° left of the wall-facing view, in the gap between the castle's corner tower and the watchtowers;
 // 2.9° up so the disc sits inside the gameplay frame (its top edge is ≈ 5° above level) instead of above it
-export const SUN_ELEV = 0.05, SUN_AZ = 0.314;
+const SUN_ELEV = 0.05;
+export const SUN_AZ = 0.314;
 export const SUN_DIR = new THREE.Vector3(Math.sin(SUN_AZ) * Math.cos(SUN_ELEV), Math.sin(SUN_ELEV), Math.cos(SUN_AZ) * Math.cos(SUN_ELEV));
 
 const lin = (hex) => new THREE.Color(hex);                          // sRGB hex → linear working colour
@@ -62,21 +63,13 @@ export function installHaze() {
   THREE.ShaderChunk.fog_vertex = '#ifdef USE_FOG\n\tvFogDir = transpose( mat3( viewMatrix ) ) * mvPosition.xyz;\n#endif';
   THREE.ShaderChunk.fog_pars_fragment = `#ifdef USE_FOG
     uniform vec3 fogColor; varying vec3 vFogDir;
-    #ifdef FOG_EXP2
-      uniform float fogDensity;
-    #else
-      uniform float fogNear; uniform float fogFar;
-    #endif
+    uniform float fogNear; uniform float fogFar;
     ${HAZE_GLSL}
   #endif`;
   THREE.ShaderChunk.fog_fragment = `#ifdef USE_FOG
     float fogDist = length( vFogDir );
     vec3 fogD = vFogDir / max( fogDist, 1e-3 );
-    #ifdef FOG_EXP2
-      float fogFactor = 1.0 - exp( - fogDensity * fogDensity * fogDist * fogDist );
-    #else
-      float fogFactor = 1.0 - exp( - pow( max( fogDist - fogNear, 0.0 ) / fogFar, 1.6 ) );
-    #endif
+    float fogFactor = 1.0 - exp( - pow( max( fogDist - fogNear, 0.0 ) / fogFar, 1.6 ) );
     float fogY = cameraPosition.y + vFogDir.y;
     fogFactor *= 1.0 - 0.4 * smoothstep( 6.0, 45.0, fogY );
     vec3 fogC = dwHaze( fogD, fogColor ) * ${FOG_K.toFixed(2)};

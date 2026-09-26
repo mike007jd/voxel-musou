@@ -1,5 +1,5 @@
 // Combo state machine: input buffer, move start/advance, cancel windows, lunge, steering, air moves.
-import { MOVES, NEUTRAL, AIR_CHAIN_MAX } from './moves.js';
+import { MOVES, NEUTRAL, AIR_CHAIN_MAX, lungeAt } from './moves.js';
 import { stickDir, turnToward, startDodge, startJump, setState, LOCO } from './locomotion.js';
 import { ST, CROWD } from '../crowd/crowd.js';
 import { emit } from '../core/events.js';
@@ -59,10 +59,7 @@ function ageBuffer(h, game) {
   if (h.jumpBuf > 0) { if (atkOk) h.jumpBuf--; else if (++h.jumpW > WAIT) h.jumpBuf = 0; }
 }
 
-const easeOut = (u) => { u = Math.min(1, Math.max(0, u)); return 1 - (1 - u) * (1 - u); };
-const linear = (u) => Math.min(1, Math.max(0, u));
-
-export function startMove(h, id, inp, game) {
+function startMove(h, id, inp, game) {
   const m = MOVES[id];
   h.move = id; h.moveT = 0; h.moveSeq++; h.moveF0 = game.frame;
   h.moveAir = !h.grounded;
@@ -70,8 +67,8 @@ export function startMove(h, id, inp, game) {
   h.buf = null;
   if (!m.air) { h.vx = 0; h.vz = 0; }
   else {
-    h.vx *= 0.4; h.vz *= 0.4; h.vy = Math.max(h.vy, m.hover ?? 2);
-    h.airAttack = true; h.airN = (h.airN || 0) + 1;
+    h.vx *= 0.4; h.vz *= 0.4; h.vy = Math.max(h.vy, m.hover);
+    h.airAttack = true; h.airN++;
   }
   // steering: stick wins; otherwise soft-lock (threat first, then the nearest enemy roughly in front)
   const [dx, dz, mag] = stickDir(inp, game.cam.yaw);
@@ -99,7 +96,7 @@ function covers(hit, lz, lx) {
  *  leave a flank attacker behind the arc). */
 function softTarget(h, m, c) {
   const hit = m.hits[0], sn = Math.sin(h.yaw), cs = Math.cos(h.yaw);
-  const fwd = m.lunge.reduce((d, [f0, f1, dist, e]) => d + dist * (e === 'lin' ? linear : easeOut)((m.tell - f0) / (f1 - f0)), 0);
+  const fwd = lungeAt(m, m.tell);
   let best = -1, bt = -1, covered = false;
   for (let i = 0; i < c.N; i++) {
     const t = c.stT[i];
@@ -148,13 +145,8 @@ export function stepCombo(h, inp, game) {
       if (mag) turnToward(h, Math.atan2(dx, dz), 0.35);
     }
     // lunge
-    for (const [f0, f1, dist, ease] of m.lunge) {
-      if (h.moveT >= f0 && h.moveT < f1) {
-        const e = ease === 'lin' ? linear : easeOut;
-        const d = dist * (e((h.moveT + 1 - f0) / (f1 - f0)) - e((h.moveT - f0) / (f1 - f0)));
-        h.x += Math.sin(h.yaw) * d; h.z += Math.cos(h.yaw) * d;
-      }
-    }
+    const d = lungeAt(m, h.moveT + 1) - lungeAt(m, h.moveT);
+    h.x += Math.sin(h.yaw) * d; h.z += Math.cos(h.yaw) * d;
     advance(h, m);
     // cancels (air strings chain only while airborne and up to AIR_CHAIN_MAX swipes)
     if (h.buf && bufOk(h, m, game) && (m.air ? !h.grounded && h.airN < AIR_CHAIN_MAX : h.grounded)) {

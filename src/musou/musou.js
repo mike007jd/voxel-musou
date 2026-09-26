@@ -14,7 +14,7 @@ import { emit } from '../core/events.js';
 import { CLIPS } from '../hero/hero.js';
 import { P, clip, spearAbout } from '../hero/rig.js';
 import { setState, stickDir, turnToward } from '../hero/locomotion.js';
-import { ST } from '../crowd/crowd.js';
+import { ST, wrap } from '../crowd/crowd.js';
 import { SUN_DIR } from '../world/sky.js';
 
 export const MUSOU = {
@@ -73,7 +73,6 @@ const TAB = new Float32Array(TN * 3), ARC = new Float32Array(TN);
   }
 }
 const ARC0 = ARC[Math.round(-TS0 / TDT)];                  // arc length where the dragon leaves the spear tip
-export const DRAGON = { arcMax: ARC[TN - 1] - ARC0, life: DK[DK.length - 1][0] };
 /** Arc length (m past the spear tip) of the head at s seconds after contact. */
 export function dragonArc(s) {
   const f = Math.min(TN - 1, Math.max(0, (s - TS0) / TDT)), k = Math.floor(f), u = f - k;
@@ -142,10 +141,8 @@ Object.assign(CLIPS, {
 });
 
 const DT = 1 / 60;
-const S_OF = (t) => (t - MUSOU.contact) / 60;              // seconds after contact
 const easeOut = (u) => 1 - (1 - u) * (1 - u);
 const smooth = (u) => { u = Math.min(1, Math.max(0, u)); return u * u * (3 - 2 * u); };
-const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 // Chase/payoff cameras never look into the low sun (backlit crowd + haze = an unreadable payoff): the view yaw keeps at
 // least SUN_AVOID from the sun's azimuth, and the payoff swings to the side of the rush that faces away from it.
 const SUN_AZ = Math.atan2(SUN_DIR.x, SUN_DIR.z), SUN_AVOID = 1.05;
@@ -193,8 +190,7 @@ export function createMusou(game) {
       c.releaseToken(i);
       c.st[i] = ST.KNOCK; c.stT[i] = 0; c.vx[i] = c.vz[i] = 0;
     }
-    emit('musou:start', { x: h.x, y: h.y, z: h.z, yaw: h.yaw, frame: game.frame, dur: MUSOU.end, activation: MUSOU.closeup,
-      burstAt: MUSOU.finisher, contact: MUSOU.contact, pushed: push.length });
+    emit('musou:start', { x: h.x, z: h.z, activation: MUSOU.closeup, burstAt: MUSOU.finisher, contact: MUSOU.contact });
   };
 
   // hit-window keys are negative (hero moves use ≥ 0) and unique per activation (enemies remember their last key)
@@ -227,30 +223,29 @@ export function createMusou(game) {
       mu.ax = h.x; mu.az = h.z; mu.ayaw = h.yaw;
       // payoff camera side: whichever side of the rush looks further away from the sun (front-lit launch fan)
       mu.side = Math.abs(wrap(h.yaw + PAYOFF_YAW - SUN_AZ)) >= Math.abs(wrap(h.yaw - PAYOFF_YAW - SUN_AZ)) ? 1 : -1;
-      const n = hitAt(M.contactHit, h.x, h.z, h.yaw, -2000, false) + hitAt(M.backHit, h.x, h.z, h.yaw, -2000, false);
-      emit('musou:hit', { count: n, x: h.x + Math.sin(h.yaw) * 2.5, y: 1.3, z: h.z + Math.cos(h.yaw) * 2.5, stage: 'contact', yaw: h.yaw, n: 0 });
+      hitAt(M.contactHit, h.x, h.z, h.yaw, -2000, false); hitAt(M.backHit, h.x, h.z, h.yaw, -2000, false);
+      emit('musou:hit', { x: h.x + Math.sin(h.yaw) * 2.5, y: 1.3, z: h.z + Math.cos(h.yaw) * 2.5, stage: 'contact', yaw: h.yaw, n: 0 });
     }
     const k0 = t - M.contact, F = M.front;
     if (k0 > 0 && k0 <= F.frames && k0 % 2 === 0) {                    // expanding launch front (same key: each body once)
       const r = F.r0 + (F.r1 - F.r0) * easeOut(k0 / F.frames);
       const n = hitAt({ ...M.contactHit, range: r, ang: F.ang, hitstop: 0, force: 5.5 + r * 0.2, lift: 7.4 + r * 0.12 }, mu.ax, mu.az, mu.ayaw, -2000, false);
-      if (n) emit('musou:hit', { count: n, x: mu.ax + Math.sin(mu.ayaw) * r * 0.8, y: 1.2, z: mu.az + Math.cos(mu.ayaw) * r * 0.8, stage: 'front', yaw: mu.ayaw, n: k0 });
+      if (n) emit('musou:hit', { x: mu.ax + Math.sin(mu.ayaw) * r * 0.8, y: 1.2, z: mu.az + Math.cos(mu.ayaw) * r * 0.8, stage: 'front', yaw: mu.ayaw, n: k0 });
     }
-    const s = S_OF(t);
+    const s = (t - M.contact) / 60;                                     // seconds after contact
     // hero drives forward behind the dragon (along the contact facing, so the dragon's path stays anchored)
     const d = M.rushDist * easeOut(Math.min(1, s / 0.6));
     h.x = mu.ax + Math.sin(mu.ayaw) * d; h.z = mu.az + Math.cos(mu.ayaw) * d; h.yaw = mu.ayaw;
     if (t < M.finisher) {
       h.musouClip = 'mu_rush'; h.musouT = (t - M.contact) / (M.finisher - M.contact);
-      const k = t - M.contact;
       mu.toWorld(dragonAt(dragonArc(s), P3), W3);
-      if (k > 0 && k % 2 === 0 && W3[1] < 4.2) {                          // the dragon tears through the crowd
-        const n = hitAt(M.dragonHit, W3[0], W3[2], mu.ayaw, -2100 - t, true);
-        emit('musou:hit', { count: n, x: W3[0], y: W3[1], z: W3[2], stage: 'dragon', yaw: mu.ayaw, n: k });
+      if (k0 > 0 && k0 % 2 === 0 && W3[1] < 4.2) {                        // the dragon tears through the crowd
+        hitAt(M.dragonHit, W3[0], W3[2], mu.ayaw, -2100 - t, true);
+        emit('musou:hit', { x: W3[0], y: W3[1], z: W3[2], stage: 'dragon', yaw: mu.ayaw, n: k0 });
       }
-      if (k > 0 && k % 3 === 0) {                                        // Zhao Yun's own sweeps around him
-        const n = hitAt(M.heroHit, h.x, h.z, h.yaw, -2200 - t, true);
-        emit('musou:hit', { count: n, x: h.x, y: 1.1, z: h.z, stage: 'rush', yaw: h.yaw, n: k });
+      if (k0 > 0 && k0 % 3 === 0) {                                      // Zhao Yun's own sweeps around him
+        hitAt(M.heroHit, h.x, h.z, h.yaw, -2200 - t, true);
+        emit('musou:hit', { x: h.x, y: 1.1, z: h.z, stage: 'rush', yaw: h.yaw, n: k0 });
       }
       return;
     }
@@ -262,10 +257,10 @@ export function createMusou(game) {
       // heavy (officers fly too) only on the first ticks: every heavy tick also costs a vfx dust puff + camera kick
       const hit = { ...M.waveHit, range: mu.waveR, lift: M.waveHit.lift - 4 * u, hitstop: w === 0 ? 4 : 0, heavy: w < 2 };
       const n = hitAt(hit, h.x, h.z, h.yaw, -3000, false);
-      if (w === 0) emit('musou:burst', { count: n, x: h.x, y: 0.2, z: h.z, frame: game.frame });
+      if (w === 0) emit('musou:burst', { count: n, x: h.x, z: h.z });
       else if (n) {                                                      // report the tick on the wave front (sparks ride the ring)
         const a = w * 2.4, R = mu.waveR * 0.9;
-        emit('musou:hit', { count: n, x: h.x + Math.sin(a) * R, y: 0.4, z: h.z + Math.cos(a) * R, stage: 'wave', yaw: a, n: w });
+        emit('musou:hit', { x: h.x + Math.sin(a) * R, y: 0.4, z: h.z + Math.cos(a) * R, stage: 'wave', yaw: a, n: w });
       }
     }
     if (t >= M.end) {
@@ -273,7 +268,7 @@ export function createMusou(game) {
       h.musou = Math.max(0, startMusou - h.musouMax * M.cost);
       h.iframes = 30;
       setState(h, 'idle');
-      emit('musou:end', { frame: game.frame });
+      emit('musou:end', {});
     }
   };
 
@@ -285,7 +280,6 @@ export function createMusou(game) {
   mu.shot = () => {
     if (!mu.active) return null;
     const t = mu.t, M = MUSOU, h = game.hero, o = shot;
-    const ease = (a, b, u) => a + (b - a) * (u * u * (3 - 2 * u));
     o.shake = 0.3; o.side = 0;
     // r3: the intro shots look DOWN onto the cobbles and the frozen crowd (DW8 anchor-activation-pose), never up into the
     // hazy sunlit sky: the old low, level pose (pitch -0.07) was 2.1× gameplay luma before the dim, so the intro never
@@ -295,7 +289,7 @@ export function createMusou(game) {
       Object.assign(o, { id: 1, yaw: offSun(mu.yaw0 + Math.PI * 0.8), dist: 4.1 - 0.6 * u, pitch: 0.36, fov: 46, height: 1.0, side: 0.1 });
     } else if (t < M.chase) {                              // head-and-shoulders cut-in (slightly from above), then pull back
       const u = Math.min(1, (t - M.closeup) / (M.pullback - M.closeup)), v = Math.max(0, (t - M.pullback) / (M.chase - M.pullback));
-      Object.assign(o, { id: 2, yaw: offSun(mu.yaw0 + Math.PI * 0.88), dist: ease(1.85, 1.6, u) + 1.8 * v * v, pitch: 0.16 + 0.12 * v, fov: 32 + 10 * v,
+      Object.assign(o, { id: 2, yaw: offSun(mu.yaw0 + Math.PI * 0.88), dist: 1.85 - 0.25 * smooth(u) + 1.8 * v * v, pitch: 0.16 + 0.12 * v, fov: 32 + 10 * v,
         height: 1.52 - 0.3 * v, side: -0.16 * (1 - v) });
     } else if (t < M.contact) {                            // low chase camera behind him (never into the sun)
       Object.assign(o, { id: 3, yaw: h.yaw, dist: 2.7, pitch: 0.08, fov: 54, height: 0.95 });

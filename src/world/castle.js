@@ -40,7 +40,7 @@ function merlons(b, r, x0, x1, y, z, depth = 0.8) {
 }
 
 /** Chinese pagoda roof hall; origin at the floor centre, front faces -Z. */
-export function pagoda(b, x, y, z, w, d, tiers = 2, s = 1) {
+function pagoda(b, x, y, z, w, d, tiers = 2, s = 1) {
   const P = (bx) => { bx.p = [bx.p[0] + x, bx.p[1] + y, bx.p[2] + z]; b.push(bx); };
   let yy = 0, ww = w, dd = d;
   for (let t = 0; t < tiers; t++) {
@@ -74,19 +74,19 @@ export function pagoda(b, x, y, z, w, d, tiers = 2, s = 1) {
   }
 }
 
-function watchtower(b, x, z, H = 15, s = 1.9) {
+function watchtower(b, x, z, H, s) {
   const P = (bx) => { bx.p = [bx.p[0] + x, bx.p[1], bx.p[2] + z]; b.push(bx); };
-  const k = s / 1.9, D = 5.6 * k, L = s < 1.9 ? 0.7 : 0.42;         // far towers: thick legs survive the background blur
+  const k = s / 1.9, D = 5.6 * k, L = 0.7, T = L / 0.42;           // far towers: thick legs/bracing survive the background blur
   for (const sx of [-s, s]) for (const sz of [-s, s]) P({ s: [L, H, L], p: [sx, H / 2, sz], r: [sz * 0.012, 0, -sx * 0.012], c: WOOD });
   for (let y = 1.5; y < H - 1; y += 3.2) {
     for (const sz of [-s, s]) {
-      P({ s: [2 * s + 0.4, 0.26 * L / 0.42, 0.26], p: [0, y, sz], c: DARKWOOD });
-      P({ s: [0.2 * L / 0.42, 4.6 * k, 0.2], p: [0, y + 1.6, sz], r: [0, 0, 0.86], c: DARKWOOD });
-      P({ s: [0.2 * L / 0.42, 4.6 * k, 0.2], p: [0, y + 1.6, sz], r: [0, 0, -0.86], c: DARKWOOD });
+      P({ s: [2 * s + 0.4, 0.26 * T, 0.26], p: [0, y, sz], c: DARKWOOD });
+      P({ s: [0.2 * T, 4.6 * k, 0.2], p: [0, y + 1.6, sz], r: [0, 0, 0.86], c: DARKWOOD });
+      P({ s: [0.2 * T, 4.6 * k, 0.2], p: [0, y + 1.6, sz], r: [0, 0, -0.86], c: DARKWOOD });
     }
     for (const sx of [-s, s]) {
-      P({ s: [0.26, 0.26 * L / 0.42, 2 * s + 0.4], p: [sx, y, 0], c: DARKWOOD });
-      P({ s: [0.2 * L / 0.42, 4.6 * k, 0.2], p: [sx, y + 1.6, 0], r: [0.86, 0, 0], c: DARKWOOD });
+      P({ s: [0.26, 0.26 * T, 2 * s + 0.4], p: [sx, y, 0], c: DARKWOOD });
+      P({ s: [0.2 * T, 4.6 * k, 0.2], p: [sx, y + 1.6, 0], r: [0.86, 0, 0], c: DARKWOOD });
     }
   }
   P({ s: [D, 0.4, D], p: [0, H, 0], c: WOOD });
@@ -198,11 +198,11 @@ export function buildCastle(scene, { wallZ, gateX }) {
   pose(0);
 
   return {
-    H, gateX, cornerX: cx, towerH: TH, x1: X1, towers,
+    H, cornerX: cx, towerH: TH, x1: X1, towers,
     // fire/brazier spots: [x, y, z, scale]
     fires: [[gateX - 6.5, 0, z0 - 2.2, 1.5], [gateX + 7, 0, z0 - 1.8, 1.3], [-30, H + 0.2, z0 + 1.8, 1.7], [-72, H + 0.2, z0 + 2, 1.5], [cx - 2, TH + 0.2, z0 + 1, 1.2],
       [-45, 0, z0 - 3.2, 1.3], [-63, 0, z0 - 2.6, 1.5], [-93, 0, z0 - 3, 1.2],         // burning siege debris against the wall foot
       [gateX + 24, 0, z0 - 6, 1.35], [-37, 0, z0 - 5, 1.2], [3, 0, z0 - 8, 1.1], [-124, 0, z0 - 3.5, 1.4]],   // … and wrecks burning in front of it (r3)
-    update(t) { pose(t); },
+    update: pose,
   };
 }

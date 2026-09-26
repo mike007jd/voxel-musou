@@ -1,6 +1,6 @@
 // Combat (sim): data-driven hit detection from moves.js hitboxes (never from animated bones → deterministic),
 // damage, hitstop, knockback / launch / juggle / spin physics and reaction states on enemies, KO, enemy strikes.
-// Emits: attack:swing, hit, hits, ko, enemy:attack, enemy:land.
+// Emits: attack:swing, hit, hits, ko, enemy:land.
 //
 // Feel targets (bench/notes/hit-feedback.md):
 // - Hitstop is hero-local and scaled: 1 sf per mook tick + 1 per 5 extra victims (cap 4), 6-8 sf on heavy contact.
@@ -8,7 +8,7 @@
 // - Launch: ≈1 s airborne with a ≈0.3 s apex float, tumbling to horizontal, one small rebound, down ≥ 2 s.
 // - Rotation in the air is planned so bodies touch down already lying (no snap on landing); juggles re-plan it.
 import { MOVES } from '../hero/moves.js';
-import { ST } from '../crowd/crowd.js';
+import { ST, wrap } from '../crowd/crowd.js';
 import { emit } from '../core/events.js';
 import { hash01 } from '../core/rng.js';
 
@@ -28,7 +28,7 @@ export const COMBAT = {
   juggleY: 2.4,                         // juggled bodies hover around 1.2-1.6 H instead of climbing
   musouPerHit: 0.3, musouPerKO: 0.55,   // musou part r3: one Musou now spends one of 3 segments, so a segment fills at the old whole-bar rate (≈ 90 hits)
   // flinch: the victim snaps round to face the blow and stumbles back ≈ 0.3 H (force 3) with its arms thrown up
-  // (pose: hitfx.js recoilPose); a grunt hit by a 'push' is knocked flat on its back, floor in ≈ 12 sf
+  // (pose: crowd/view.js recoilPose); a grunt hit by a 'push' is knocked flat on its back, floor in ≈ 12 sf
   flinchKick: 1.6, flinchDamp: 0.85, knockLift: 1.7, knockK: 0.7,
 };
 const DT = 1 / 60, HALF_PI = Math.PI / 2;
@@ -38,12 +38,11 @@ const lieBelow = (a) => -HALF_PI + Math.floor((a + HALF_PI + 1e-6) / Math.PI) * 
 
 export function createCombat(game) {
   const cb = {};
-  const hitsPayload = { count: 0, x: 0, y: 0, z: 0, move: '', hitstop: 0, heavy: false, kos: 0 };
-  const landPayload = { i: 0, x: 0, y: 0, z: 0, bounce: false, v: 0 };
+  const hitsPayload = { count: 0, x: 0, z: 0, move: '', hitstop: 0, heavy: false };
+  const landPayload = { x: 0, z: 0, bounce: false };
   const floaty = new Uint8Array(game.crowd.N);              // launched (apex hang) vs thrown (flat arc)
   const rxEnd = new Float64Array(game.crowd.N);             // planned lying angle at touchdown
   const victims = new Int32Array(game.crowd.N);
-  const hitHeavy = game.crowd.hitHeavy = new Uint8Array(game.crowd.N);   // last hit was heavy (render tint, hitfx.js)
 
   let lastTick = -1;                                         // a move frame is resolved once, even across hitstop
   let heavyKey = null;                                       // window that already paid its heavy hitstop
@@ -64,9 +63,7 @@ export function createCombat(game) {
     const d2 = dx * dx + dz * dz, R = hit.range + r;
     if (d2 > R * R) return false;
     if (hit.shape === 'circle' || d2 < 1.0) return true;
-    let a = Math.atan2(lx, lz) - (hit.dir || 0) * Math.PI / 180;
-    a = Math.atan2(Math.sin(a), Math.cos(a));
-    return Math.abs(a) <= hit.ang * Math.PI / 360;
+    return Math.abs(wrap(Math.atan2(lx, lz) - (hit.dir || 0) * Math.PI / 180)) <= hit.ang * Math.PI / 360;
   }
 
   /** Hero hitstop for one tick of `hit` that connected with `count` enemies (musou keeps its own numbers). */
@@ -87,21 +84,21 @@ export function createCombat(game) {
    */
   cb.strike = (hit, ox, oz, yaw, key, rehit, moveId) => {
     const c = game.crowd;
-    let count = 0, kos = 0, sx = 0, sy = 0, sz = 0;
+    let count = 0, sx = 0, sz = 0;
     for (let i = 0; i < c.N; i++) {
       const s = c.st[i];
       if (s === ST.OFF || s === ST.DEAD) continue;
       if (!rehit && c.lastHit[i] === key) continue;
       if (!inShape(i, hit, ox, oz, yaw)) continue;
       c.lastHit[i] = key;
-      if (applyHit(i, hit, ox, oz, yaw, moveId)) kos++;
-      victims[count++] = i; sx += c.x[i]; sy += c.y[i]; sz += c.z[i];
+      applyHit(i, hit, ox, oz, yaw, moveId);
+      victims[count++] = i; sx += c.x[i]; sz += c.z[i];
     }
     if (count) {
       const hs = heroStop(hit, count, moveId, key), vs = MOVES[moveId] ? Math.min(Math.max(hs, hit.sweep ? 2 : 0), COMBAT.victimStopMax) : hs;
       for (let k = 0; k < count; k++) c.hs[victims[k]] = vs;
       game.hitstop = Math.max(game.hitstop, hs);
-      Object.assign(hitsPayload, { count, x: sx / count, y: sy / count + 1.1, z: sz / count, move: moveId, hitstop: hs, heavy: !!hit.heavy, kos });
+      Object.assign(hitsPayload, { count, x: sx / count, z: sz / count, move: moveId, hitstop: hs, heavy: !!hit.heavy });
       emit('hits', hitsPayload);
     }
     return count;
@@ -147,7 +144,7 @@ export function createCombat(game) {
     // hot silhouette only on a fresh contact (hitfx.js); rapid re-hits (multi-hit moves, juggles) just refresh the tint.
     // Heavy hits tint 3 sf longer and deeper (amber).
     c.flash[i] = c.flash[i] > COMBAT.tintFrames / 2 ? COMBAT.tintFrames - 2 : COMBAT.tintFrames + (hit.heavy ? 3 : 0);
-    hitHeavy[i] = hit.heavy ? 1 : 0;
+    c.hitHeavy[i] = hit.heavy ? 1 : 0;
     game.crowd.releaseToken(i);
     let kb = hit.kb, force = hit.force || 0, lift = hit.lift || 0;
     const killed = c.hp[i] <= 0 && !c.kod[i];
@@ -212,12 +209,11 @@ export function createCombat(game) {
     // hero rewards
     h.combo++; h.comboT = COMBAT.comboWindow;
     if (h.state !== 'musou') h.musou = Math.min(h.musouMax, h.musou + COMBAT.musouPerHit + (killed ? COMBAT.musouPerKO : 0));
-    emit('hit', { i, x: c.x[i], y: c.y[i] + 1.1, z: c.z[i], dx, dz, dmg: hit.dmg, kb, move: moveId, combo: h.combo, killed, officer, heavy: !!hit.heavy });
+    emit('hit', { i, x: c.x[i], y: c.y[i] + 1.1, z: c.z[i], dx, dz, move: moveId, killed, officer, heavy: !!hit.heavy });
     if (killed) {
       h.kos++;
-      emit('ko', { i, x: c.x[i], y: c.y[i] + 0.9, z: c.z[i], dx, dz, type: c.type[i], total: h.kos, officer });
+      emit('ko', { i, x: c.x[i], y: c.y[i] + 0.9, z: c.z[i], dx, dz, officer });
     }
-    return killed;
   }
 
   /** Hero hitboxes for the current move frame. */
@@ -232,7 +228,7 @@ export function createCombat(game) {
       const hit = m.hits[w];
       const t = h.moveT;
       if (t < hit.f[0] || t > hit.f[1]) continue;
-      if (t === hit.f[0]) emit('attack:swing', { move: h.move, win: w, x: h.x, y: h.y + 1.2, z: h.z, yaw: h.yaw, heavy: !!hit.heavy });
+      if (t === hit.f[0]) emit('attack:swing', { move: h.move, win: w, yaw: h.yaw, heavy: !!hit.heavy });
       const rel = t - hit.f[0];
       // combo-system r4: a `sweep` window (moves.js) resolves in swing order — the sector grows from the start side over
       // sweepN frames, so victims fall with the blade and the chain ticks +1…+4 per frame instead of all on one frame
@@ -248,9 +244,9 @@ export function createCombat(game) {
     }
   }
 
-  function land(i, bounce, v) {
+  function land(i, bounce) {
     const c = game.crowd;
-    Object.assign(landPayload, { i, x: c.x[i], y: 0, z: c.z[i], bounce, v });
+    Object.assign(landPayload, { x: c.x[i], z: c.z[i], bounce });
     emit('enemy:land', landPayload);
   }
 
@@ -278,15 +274,15 @@ export function createCombat(game) {
         if (c.y[i] <= 0 && c.vy[i] < 0) {
           const v = -c.vy[i];
           c.y[i] = 0;
-          c.rx[i] = Math.atan2(Math.sin(c.rx[i]), Math.cos(c.rx[i]));   // same pose, unwound
+          c.rx[i] = wrap(c.rx[i]);                              // same pose, unwound
           if (v > COMBAT.bounceMin && !c.bounce[i]) {
             c.bounce[i] = 1; c.vy[i] = Math.min(COMBAT.bounceMax, v * COMBAT.bounceK);
             c.vx[i] *= 0.5; c.vz[i] *= 0.5; c.spinV[i] *= 0.3;
-            land(i, true, v);
+            land(i, true);
           } else {
             c.st[i] = c.hp[i] <= 0 ? ST.DEAD : ST.DOWN; c.stT[i] = 0;
             c.rxV[i] = 0; c.spinV[i] = 0; c.vy[i] = 0; c.vx[i] *= 0.4; c.vz[i] *= 0.4;
-            land(i, false, v);
+            land(i, false);
           }
         }
       } else if (s === ST.DOWN || s === ST.DEAD) {
@@ -309,15 +305,13 @@ export function createCombat(game) {
     c.rx[i] += ((c.rx[i] < 0 ? -HALF_PI : HALF_PI) - c.rx[i]) * k;
   }
 
-  /** An enemy's strike reaches its active frame (called by crowd AI). */
+  /** An enemy's real (non-feint) strike reaches its active frame (called by crowd AI, which emits enemy:attack). */
   cb.enemyStrike = (i) => {
     const c = game.crowd, h = game.hero;
     const officer = c.type[i] === 1;
-    emit('enemy:attack', { i, x: c.x[i], y: 1.1, z: c.z[i], officer });
     const dx = h.x - c.x[i], dz = h.z - c.z[i], d = Math.hypot(dx, dz);
     if (d > (officer ? 2.3 : 1.9) || h.y > 1.2) return;
-    let a = Math.atan2(dx, dz) - c.yaw[i]; a = Math.atan2(Math.sin(a), Math.cos(a));
-    if (Math.abs(a) > 1.1) return;
+    if (Math.abs(wrap(Math.atan2(dx, dz) - c.yaw[i])) > 1.1) return;
     h.hurt(officer ? 22 : 10, c.x[i], c.z[i], officer);
   };
 

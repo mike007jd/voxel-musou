@@ -21,7 +21,7 @@ export const LOCO = {
 const DT = 1 / 60, TAU = Math.PI * 2;
 const ROLL_PLANT = 13;                  // dodge frame where the roll comes round onto the feet (pose: anims/locomotion.js)
 // dash attack: the front foot lands out of the lunge leap 8 sf into the lunge (anims/attacks.js MOVE_FEET.dash)
-const DASH_PLANT = MOVES.dash && MOVES.dash.lunge[1] ? MOVES.dash.lunge[1][0] + 8 : -1;
+const DASH_PLANT = MOVES.dash.lunge[1][0] + 8;
 const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
@@ -47,9 +47,7 @@ export function stickDir(inp, camYaw) {
 }
 
 export function turnToward(h, targetYaw, maxStep) {
-  let d = targetYaw - h.yaw;
-  d = Math.atan2(Math.sin(d), Math.cos(d));
-  h.yaw += Math.max(-maxStep, Math.min(maxStep, d));
+  h.yaw += clamp(wrap(targetYaw - h.yaw), -maxStep, maxStep);
 }
 
 export function setState(h, s) { if (h.state !== s) { h.state = s; h.stateT = 0; } }
@@ -76,8 +74,8 @@ export function stepLocomotion(h, inp, camYaw) {
   if (!h.grounded) {                       // air control (momentum from the run carries)
     const tvx = dx * LOCO.runSpeed * mag, tvz = dz * LOCO.runSpeed * mag;
     if (mag) {
-      h.vx += Math.max(-LOCO.airControl * DT, Math.min(LOCO.airControl * DT, tvx - h.vx));
-      h.vz += Math.max(-LOCO.airControl * DT, Math.min(LOCO.airControl * DT, tvz - h.vz));
+      h.vx += clamp(tvx - h.vx, -LOCO.airControl * DT, LOCO.airControl * DT);
+      h.vz += clamp(tvz - h.vz, -LOCO.airControl * DT, LOCO.airControl * DT);
       turnToward(h, Math.atan2(dx, dz), LOCO.turnRate * 0.5 * DT);
     }
     h.anim.lean *= 0.8;
@@ -120,7 +118,7 @@ export function startDodge(h, inp, camYaw) {
   h.dodgeX = dx; h.dodgeZ = dz;
   h.move = null;
   h.state = 'dodge'; h.stateT = 0;        // always restart (setState keeps stateT when already dodging → dead 2nd dodge)
-  h.dodgeSeq = (h.dodgeSeq || 0) + 1;     // re-triggers the anim blend for dodge → dodge
+  h.dodgeSeq++;                           // re-triggers the anim blend for dodge → dodge
   h.iframes = LOCO.dodgeIFrames[1];
   h.vx = h.vz = 0; h.speed = 0; h.runT = 0;
   emit('dodge', { x: h.x, y: h.y, z: h.z, dx, dz });

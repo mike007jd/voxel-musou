@@ -19,17 +19,6 @@ const ZERO = new THREE.Matrix4().makeScale(0, 0, 0), UP = new THREE.Vector3(0, 1
 const clamp01 = (v) => Math.min(1, Math.max(0, v));
 const ramp = (t, a, b) => clamp01((t - a) / (b - a));
 
-// uDepth: NDC depth of the quad; depth-tested, so whatever stands in front of it (launched bodies) cuts out as a silhouette
-const FS_VERT = 'uniform float uDepth; varying vec2 vUv; void main() { vUv = position.xy * 0.5 + 0.5; gl_Position = vec4(position.xy, uDepth, 1.0); }';
-function fullscreen(frag, uniforms, blend, order) {
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3));
-  const m = new THREE.Mesh(g, new THREE.ShaderMaterial({ uniforms, vertexShader: FS_VERT, fragmentShader: frag, depthTest: true, depthWrite: false,
-    transparent: true, fog: false, ...blend }));
-  m.frustumCulled = false; m.renderOrder = order; m.visible = false;
-  return m;
-}
-
 /** Box geometry with baked per-face shade (top bright, bottom dark) so flat-coloured voxels still read as solids. */
 function shadedBox() {
   const g = new THREE.BoxGeometry(1, 1, 1), n = g.attributes.normal, col = new Float32Array(n.count * 3);
@@ -100,7 +89,14 @@ export function createMusouView(scene, game, camera) {
   // ---- grade quads
   const addU = { uC: { value: new THREE.Vector2(0.5, 0.5) }, uRays: { value: 0 }, uTime: { value: 0 }, uAspect: { value: 16 / 9 }, uDepth: { value: -1 },
     uCol: { value: new THREE.Color(0.42, 0.95, 1.25) } };
-  const add = fullscreen(`
+  // fullscreen triangle; uDepth: NDC depth of the quad; depth-tested, so whatever stands in front of it (launched bodies)
+  // cuts out as a silhouette
+  const addGeo = new THREE.BufferGeometry();
+  addGeo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3));
+  const add = new THREE.Mesh(addGeo, new THREE.ShaderMaterial({ uniforms: addU, depthWrite: false, transparent: true, fog: false,
+    blending: THREE.AdditiveBlending,
+    vertexShader: 'uniform float uDepth; varying vec2 vUv; void main() { vUv = position.xy * 0.5 + 0.5; gl_Position = vec4(position.xy, uDepth, 1.0); }',
+    fragmentShader: `
     uniform vec2 uC; uniform float uRays, uTime, uAspect; uniform vec3 uCol; varying vec2 vUv;
     void main() {
       vec2 p = vUv - uC; p.x *= uAspect;
@@ -110,7 +106,8 @@ export function createMusouView(scene, game, camera) {
       float core = exp(-r * r * 60.0);
       float rays = ray * smoothstep(0.05, 0.3, r) * (1.0 - 0.45 * clamp(r, 0.0, 1.0)) + core * 0.8;
       gl_FragColor = vec4(uCol * uRays * rays, 1.0);
-    }`, addU, { blending: THREE.AdditiveBlending }, 1e6 + 1);
+    }` }));
+  add.frustumCulled = false; add.renderOrder = 1e6 + 1; add.visible = false;
   scene.add(add);
   const layer = (blend) => { const d = document.createElement('div'); d.style.cssText = `position:fixed;inset:0;pointer-events:none;opacity:0;mix-blend-mode:${blend}`; return d; };
   const dimEl = layer('multiply'), washEl = layer('screen');
@@ -337,7 +334,7 @@ export function createMusouView(scene, game, camera) {
     }
     fx.visible = any;
     fx.instanceMatrix.needsUpdate = true;
-    if (fx.instanceColor) fx.instanceColor.needsUpdate = true;
+    fx.instanceColor.needsUpdate = true;
   }
 
   function updateGrade(t) {

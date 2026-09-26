@@ -12,9 +12,9 @@
 //  - Every KO breaks the soldier apart: voxel-clump debris in his palette plus helmet / torso / shield blocks (bounce,
 //    settle, persist), warm voxel dust, embers, charge glint.
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { on } from '../core/events.js';
 import { vrng } from '../core/rng.js';
+import { mergeVoxel } from '../core/voxel.js';
 import { MOVES } from '../hero/moves.js';
 import { heroPose } from '../hero/hero.js';
 import { POSE_SIZE, spearWorld } from '../hero/rig.js';
@@ -34,7 +34,7 @@ function clumpGeometry() {
     g.setAttribute('color', new THREE.Float32BufferAttribute(new Array(g.attributes.position.count * 3).fill(v), 3));
     parts.push(g);
   }
-  return mergeGeometries(parts);
+  return mergeVoxel(parts);
 }
 /** sRGB hex → linear rgb array, times k (k > 1 = HDR, blooms). */
 const lin = (hex, k = 1) => { _c.set(hex); return [_c.r * k, _c.g * k, _c.b * k]; };
@@ -415,13 +415,13 @@ export function createVfx(scene, game, world) {
     const m = new THREE.Mesh(ringGeo, new THREE.ShaderMaterial({ vertexShader: RING_VS, fragmentShader: RING_FS,
       uniforms: { uU: { value: 0 }, uColor: { value: new THREE.Color() } },
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
-    m.visible = false; m.frustumCulled = false; m.userData = { t: 0, dur: 0.4, r: 3 };
+    m.visible = false; m.frustumCulled = false;
     scene.add(m); rings.push(m);
   }
   let ringNext = 0;
   const ring = (x, z, r, dur, rgb) => {
     const m = rings[ringNext]; ringNext = (ringNext + 1) % rings.length;
-    m.position.set(x, 0.06, z); m.userData = { f0: now(), dur, r }; m.visible = true; m.scale.setScalar(r);
+    m.position.set(x, 0.06, z); m.userData = { f0: now(), dur }; m.visible = true; m.scale.setScalar(r);
     m.material.uniforms.uColor.value.setRGB(rgb[0], rgb[1], rgb[2]);
     m.material.uniforms.uU.value = 0;
   };
@@ -443,9 +443,9 @@ export function createVfx(scene, game, world) {
     beams.aF.array[i * 3 + 1] = vrng.next(); beams.aF.array[i * 3 + 2] = kind;
     beams.mesh.setColorAt(i, _c.setRGB(rgb[0], rgb[1], rgb[2])); beams.mesh.instanceColor.needsUpdate = true;
   };
-  const _ax = new THREE.Vector3(), _sd = new THREE.Vector3(), _st = new THREE.Vector3();
+  const _ax = new THREE.Vector3(), _sd = new THREE.Vector3(), _st = new THREE.Vector3(), _0 = new THREE.Vector3();
   const updateBeams = () => {
-    const e = beams.mesh.instanceMatrix.array, f = now();
+    const f = now();
     for (let i = 0; i < BN; i++) {
       if (!B.on[i]) continue;
       const u = (f - B.t[i]) / 60 / B.dur[i];
@@ -466,11 +466,7 @@ export function createVfx(scene, game, world) {
       _ax.multiplyScalar(L * Math.max(0.01, a1 - a0));
       // x column = any perpendicular with length w (shader only reads its length)
       _sd.set(0, 1, 0).cross(_ax); if (_sd.lengthSq() < 1e-8) _sd.set(1, 0, 0); _sd.setLength(w);
-      const o = i * 16;
-      e[o] = _sd.x; e[o + 1] = _sd.y; e[o + 2] = _sd.z; e[o + 3] = 0;
-      e[o + 4] = 0; e[o + 5] = 0; e[o + 6] = 0; e[o + 7] = 0;
-      e[o + 8] = _ax.x; e[o + 9] = _ax.y; e[o + 10] = _ax.z; e[o + 11] = 0;
-      e[o + 12] = _st.x; e[o + 13] = _st.y; e[o + 14] = _st.z; e[o + 15] = 1;
+      beams.mesh.setMatrixAt(i, _m.makeBasis(_sd, _0, _ax).setPosition(_st));
       beams.aF.array[i * 3] = u;
     }
     beams.mesh.instanceMatrix.needsUpdate = true; beams.aF.needsUpdate = true;
@@ -532,9 +528,9 @@ export function createVfx(scene, game, world) {
   let clock = 0;
   const pose = new Float32Array(POSE_SIZE), hpos = new THREE.Vector3(), tipNow = new THREE.Vector3(), baseNow = new THREE.Vector3();
 
-  const vfx = { flash: 0, sparks, debris, dust };
-  let flashHold = 0, flashDecay = 2.2;
-  const flash = (v, hold = 0, decay = 2.2) => { if (v >= vfx.flash) { vfx.flash = v; flashHold = hold; flashDecay = decay; } };
+  const vfx = { flash: 0 };
+  let flashDecay = 2.2;
+  const flash = (v, decay = 2.2) => { if (v >= vfx.flash) { vfx.flash = v; flashDecay = decay; } };
 
   const isHeavyMove = (id) => !!id && (id[0] === 'c' || id === 'jc' || id === 'n6');
   function trailActive(h) {
@@ -563,7 +559,7 @@ export function createVfx(scene, game, world) {
     }
   };
   /** Ring of dust rolling outward along the ground (shockwave in the voxel style). */
-  const dustRing = (x, z, n, r0, spd, size, alpha = 0.55) => {
+  const dustRing = (x, z, n, r0, spd, size, alpha) => {
     size *= 0.6; n *= 2;
     for (let i = 0; i < n; i++) {
       const a = (i / n) * 6.283 + vrng.range(-0.15, 0.15), c = DUST[vrng.int(0, DUST.length - 1)], s = spd * vrng.range(0.75, 1.1);
@@ -573,7 +569,7 @@ export function createVfx(scene, game, world) {
   };
   // horizontal launch is mirrored away from the camera (a chunk heading at the lens flies behind the victim instead),
   // so KO debris bursts around soldiers instead of over the gameplay camera
-  const chunks = (x, y, z, n, dx, dz, spd, pal, smin = 0.08, smax = 0.18, up = [2, 4.5], life = [1.4, 2.2]) => {
+  const chunks = (x, y, z, n, dx, dz, spd, pal, smin, smax, up, life) => {
     const cx = camPos.x - x, cz = camPos.z - z, cl = Math.hypot(cx, cz) || 1, ux = cx / cl, uz = cz / cl;
     for (let i = 0; i < n; i++) {
       const c = pal[vrng.int(0, pal.length - 1)], a = vrng.range(0, 6.283), s = spd * vrng.range(0.3, 1);
@@ -591,10 +587,10 @@ export function createVfx(scene, game, world) {
         rgb[0] * vrng.range(0.7, 1.1), rgb[1] * vrng.range(0.8, 1.1), rgb[2]);
     }
   };
-  const embers = (x, y, z, n, spread, rgb = [2.4, 0.95, 0.28]) => {
+  const embers = (x, y, z, n, spread) => {
     for (let i = 0; i < n; i++) {
       sparks.spawn(x + vrng.range(-spread, spread), y + vrng.range(0, 0.6), z + vrng.range(-spread, spread),
-        vrng.range(-1.2, 1.2), vrng.range(1.2, 3.5), vrng.range(-1.2, 1.2), vrng.range(0.9, 2.0), vrng.range(0.03, 0.06), 3, rgb[0], rgb[1], rgb[2]);
+        vrng.range(-1.2, 1.2), vrng.range(1.2, 3.5), vrng.range(-1.2, 1.2), vrng.range(0.9, 2.0), vrng.range(0.03, 0.06), 3, 2.4, 0.95, 0.28);
     }
   };
   /** Radial ray burst: n beams from (x,z) tilted up-and-out, length L. */
@@ -623,7 +619,7 @@ export function createVfx(scene, game, world) {
     }
   };
   /** Dust column: big warm puffs rising in a ring of radius r0..r1, tops near `top` m, holding ≈ 1 s (C6-style dust wall). */
-  const dustColumn = (x, z, n, r0, r1, top, size = [0.9, 1.3], alpha = 0.72) => {
+  const dustColumn = (x, z, n, r0, r1, top, size, alpha) => {
     for (let i = 0; i < n; i++) {
       const a = offLens(x, z, vrng.range(0, 6.283)), d = vrng.range(r0, r1), c = DUST_WALL[vrng.int(0, DUST_WALL.length - 1)], k = vrng.range(0.3, 1);
       const vy = vrng.range(1.4, 3.2) * top / 4.6;                         // drag 1.8/s → rises vy / 1.8 m
@@ -807,7 +803,7 @@ export function createVfx(scene, game, world) {
     // musou part r2: the finisher sits under the musou view's own burst light and the post's cool-biased bloom; at full
     // strength these stacked into a white fog over the launched tiers. Short flash
     // kick (was 0.3 held 0.35 s), fewer / slimmer / dimmer rays and sparks, so the bodies stay readable.
-    flash(0.12, 0, 4);                                    // ≈ 2 frames: the cream mix held a veil over the launched tiers
+    flash(0.12, 4);                                    // ≈ 2 frames: the cream mix held a veil over the launched tiers
     rayBurst(e.x, 0.2, e.z, 12, 10, [0.2, 0.85, 1.15], [0.2, 1.3], 0.8, 0.45);
     rayBurst(e.x, 0.2, e.z, 4, 7, [0.9, 1.0, 1.1], [0.9, 1.45], 0.6, 0.4);
     // musou part r3: the 13 m teal + 8 m gold ground rings passed under the finisher camera and filled the lower half of
@@ -823,7 +819,7 @@ export function createVfx(scene, game, world) {
   });
   on('scenario', () => {
     sparks.clear(); hot.clear(); debris.clear(); dust.clear(); samples.length = 0; for (const r of rings) r.visible = false;
-    B.on.fill(0); St.on.fill(0); vfx.flash = 0; flashHold = 0; lastTick = -1;
+    B.on.fill(0); St.on.fill(0); vfx.flash = 0; lastTick = -1;
     for (const q of [beams, stars]) { for (let i = 0; i < q.n; i++) q.mesh.setMatrixAt(i, ZERO); q.mesh.instanceMatrix.needsUpdate = true; }
   });
 
@@ -975,8 +971,7 @@ export function createVfx(scene, game, world) {
       if (u >= 1) { r.visible = false; continue; }
       r.material.uniforms.uU.value = u;
     }
-    if (flashHold > 0) flashHold -= dt;
-    else vfx.flash = Math.max(0, vfx.flash - dt * flashDecay);
+    vfx.flash = Math.max(0, vfx.flash - dt * flashDecay);
     buildTrail();
   };
   return vfx;

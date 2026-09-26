@@ -1,7 +1,7 @@
 // Boot + fixed 60 Hz loop. Sim modules (hero, combat, crowd, musou, camera control yaw) advance only in step();
 // render-side modules read sim state in render() and never write it.
 import * as THREE from 'three';
-import { rng, vrng } from './core/rng.js';
+import { vrng } from './core/rng.js';
 import { emit } from './core/events.js';
 import { createInput } from './core/input.js';
 import { createPost } from './post/post.js';
@@ -43,7 +43,7 @@ const camRig = createCameraRig(game, vw, vh);
 const vfx = createVfx(scene, game, world);
 const musouView = createMusouView(scene, game, camRig.camera);   // musou part: grade, dragon, cut-in (render-only)
 // hud part: camera passed so officer name/HP tags can be projected over their heads (read-only)
-const hud = createHud(document.getElementById('hud'), game, { camera: camRig.camera });
+const hud = createHud(document.getElementById('hud'), game, camRig.camera);
 createAudio(game);
 
 function step() {
@@ -67,17 +67,16 @@ function render() {
   camRig.update(dt);
   world.update(dt, camRig.focus);
   musouView.update(dt);
-  post.flash(vfx.flash);
-  post.render(scene, camRig.camera, game.frame / 60, camRig.focus, world.sunDir);   // post-fx: DoF focus + haze sun
+  post.render(scene, camRig.camera, game.frame / 60, camRig.focus, vfx.flash);   // post-fx: DoF focus + screen flash
   hud.update();
 }
 
 function start() {
-  rng.seed(1); vrng.seed(7936);
+  vrng.seed(7936);
   game.hero.reset();
   game.crowd.reset(); game.combat.reset(); game.musou.reset(); game.cam.reset(0);
   heroView.reset();
-  game.crowd.spawnArmy(Math.min(ENEMIES, game.crowd.grunts));
+  game.crowd.spawnArmy();
   emit('scenario', { name: 'arena' });
 }
 

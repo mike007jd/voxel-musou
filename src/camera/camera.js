@@ -4,17 +4,16 @@
 // view can swing without bending his path.
 // Render side: DW8-style low third-person follow (hero ≈ 45 % of frame height, feet near the bottom, rigid position
 // follow with velocity lead), combat framing (pull out and tilt up slightly in dense crowds so the castle skyline stays in frame, slight aim bias toward the
-// nearby mob, hero held near the centre), a clean see-through cutout where soldiers stand between lens and hero
-// (occlusion.js), event-driven micro-kicks only on heavy hits (none on normal hits) and Musou choreography.
+// nearby mob, hero held near the centre), event-driven micro-kicks only on heavy hits (none on normal hits) and Musou
+// choreography.
 // Render smoothing uses sim time elapsed between renders and shake uses sim frames, so captures are deterministic.
 import * as THREE from 'three';
 import { on } from '../core/events.js';
 import { ST } from '../crowd/crowd.js';
-import { FADE } from './occlusion.js';
 
 const DEG = Math.PI / 180;
 const BLEND = 0.45;                                   // s, Musou → gameplay blend (bench: 0.3-0.6 s, no pop)
-export const CAM = {
+const CAM = {
   // Default rig from bench/notes/camera-hud-world.md (DW8): vFOV 40°, ≈4.9 m behind and 2.9 m above the feet, pitch
   // ≈14.6°, aim crossing the hero at 1.62 m → hero ≈ 45 % of frame height, feet ≈ 89 %, horizon ≈ 14 %.
   dist: 5.06, height: 1.62, pitch: 14.6 * DEG, fov: 40,
@@ -34,13 +33,12 @@ export const CAM = {
   crowdR: 10, crowdPull: 0.12, crowdPitch: -2.5 * DEG, // dense crowd (> ~40 within crowdR m): pull out 12 % (bench 10-15 %: hero stays ≥ 41 % H), look up 2.5° (frame top ≈ 7.9° above level: castle wall top + towers stay in)
   biasR: 8, biasMax: 0.18,  // aim bias toward the nearby mob: radius (m), max lateral shift (m) → hero stays at x 47-53 %
   leadYMax: 2, leadYRate: 45, // aerial vertical lead: cap (m) and smoothing (1/s): the jump-charge plunge pans ≤ 56 px/frame, feet in frame
-  cutR: 0.62, cutEdgePx: 5, // see-through window around the hero (occlusion.js): capsule radius (m), dithered rim (px)
   kickMaxPx: 4,             // shake ceiling at 720p (bench: ≤ 4 px, finishers only)
   cutJump: 40,              // hero moved faster than this (m/s, ≥ 1 m) between two renders: teleport → hard cut (dodge 22)
 };
 
 const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
-const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+const { clamp } = THREE.MathUtils;
 const smooth = (a, b, v) => { const t = clamp((v - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 /** Camera offset from its aim point: `dist` back along view yaw, raised by `pitch`. */
 const behind = (v, yaw, pitch, dist) => v.set(-Math.sin(yaw) * Math.cos(pitch) * dist, Math.sin(pitch) * dist, -Math.cos(yaw) * Math.cos(pitch) * dist);
@@ -149,10 +147,9 @@ export function createCameraRig(game, width, height) {
   const camera = new THREE.PerspectiveCamera(CAM.fov, width / height, 0.1, 1200);
   const target = new THREE.Vector3(), want = new THREE.Vector3(), pos = new THREE.Vector3();
   let yaw = 0, snap = true, blend = 0, warned = false;
-  let cine = null;                                // { kind, start, dur, ... } in sim frames
-  let pull = 0, bias = 0, leadYs = 0, viewH = height; // smoothed crowd pull-out (fraction), lateral aim bias (m), aerial lead (m)
+  let cine = null;                                // { phase: current musou shot id } while a Musou plays
+  let pull = 0, bias = 0, leadYs = 0;             // smoothed crowd pull-out (fraction), lateral aim bias (m), aerial lead (m)
   let lastX = 0, lastZ = 0;                        // hero ground position at the previous render (teleport → snap)
-  const pv = new THREE.Vector3();
   // micro-kicks: screen-space px at 720p, fired by events, aged in sim frames (deterministic)
   const kicks = [];
   const kick = (px, dirX, dirY, len) => {
@@ -165,9 +162,8 @@ export function createCameraRig(game, width, height) {
   on('hero:hurt', (e) => kick(e.armored ? 0.6 : 1.5, 1, 0.3, e.armored ? 4 : 6));
   on('land', (e) => e.hard && kick(2, 0, 1, 6));
   on('musou:burst', () => kick(4, 0.3, 1, 10));
-  on('musou:start', (e) => { cine = { kind: 'musou', start: game.frame, act: e.activation, burst: e.burstAt, dur: e.dur, yaw: e.yaw, phase: -1 }; });
+  on('musou:start', () => { cine = { phase: -1 }; });
   on('musou:end', () => { cine = null; blend = BLEND; });                  // eased blend back to the gameplay rig
-  on('scenario', () => { snap = true; cine = null; blend = 0; pull = bias = leadYs = 0; kicks.length = 0; });
 
   /** Nearby-crowd stats around the hero (render-side read of sim arrays): count within crowdR and lateral pull. */
   function crowdAround(h, rx, rz) {
@@ -187,24 +183,22 @@ export function createCameraRig(game, width, height) {
 
   const api = {
     camera,
-    snap() { snap = true; },
-    resize(w, h) { camera.aspect = w / h; camera.updateProjectionMatrix(); viewH = h; },
+    resize(w, h) { camera.aspect = w / h; camera.updateProjectionMatrix(); },
     update(dt) {
       const h = game.hero;
       // a teleport is a cut, not a 6-frame swoop across the screen
       if (Math.hypot(h.x - lastX, h.z - lastZ) > Math.max(1, CAM.cutJump * dt)) snap = true;
       lastX = h.x; lastZ = h.z;
-      const cfg = CAM;
       let camYaw = game.cam.yaw;
-      let dist = cfg.dist, pitch = cfg.pitch, fov = cfg.fov, height = cfg.height, side = 0, shakeK = 1;
+      let dist = CAM.dist, pitch = CAM.pitch, fov = CAM.fov, height = CAM.height, side = 0, shakeK = 1;
       // Musou choreography is owned by the musou part: game.musou.shot() returns the shot for the current musou
       // frame (pose → close-up → chase → payoff); a new shot id is a hard cut. `side` shifts the aim to screen-right.
-      const shot = cine && game.musou.shot && game.musou.shot();
+      const shot = cine && game.musou.shot();
       if (shot) {
         if (shot.id !== cine.phase) { cine.phase = shot.id; snap = true; }
         ({ yaw: camYaw, dist, pitch, fov, height, side, shake: shakeK } = shot);
       }
-      const ky = 1 - Math.exp(-cfg.yawLerp * dt);
+      const ky = 1 - Math.exp(-CAM.yawLerp * dt);
       yaw = snap ? camYaw : yaw + wrap(camYaw - yaw) * ky;
       // combat framing (gameplay rig only): pull out in dense crowds, bias the aim toward the nearby mob
       const rx = -Math.cos(yaw), rz = Math.sin(yaw);                        // screen-right on the ground
@@ -228,12 +222,12 @@ export function createCameraRig(game, width, height) {
       const lat = shot ? side : bias;                                      // musou shot: its own screen-right offset
       // velocity lead v/follow cancels the exponential follow's steady lag (≈0.47 m at a run): the running hero stays
       // centred and the camera backs off in time when he runs at it (lunges and rolls still ease in)
-      const lead = shot ? 0 : 1 / cfg.follow, lift = shot ? 0.6 : CAM.airLift;
+      const lead = shot ? 0 : 1 / CAM.follow, lift = shot ? 0.6 : CAM.airLift;
       // … and the fall after a jump (feet stay in frame): capped and eased, so the plunge start/landing is not a jolt
-      const leadY = shot || h.grounded ? 0 : clamp(h.vy * lift / cfg.followY, -CAM.leadYMax, CAM.leadYMax);
+      const leadY = shot || h.grounded ? 0 : clamp(h.vy * lift / CAM.followY, -CAM.leadYMax, CAM.leadYMax);
       leadYs = snap ? leadY : leadYs + (leadY - leadYs) * (1 - Math.exp(-CAM.leadYRate * dt));
       target.set(h.x + rx * lat + h.vx * lead, h.y * lift + height + leadYs, h.z + rz * lat + h.vz * lead);
-      const kxz = snap ? 1 : 1 - Math.exp(-cfg.follow * dt), kyv = snap ? 1 : 1 - Math.exp(-cfg.followY * dt);
+      const kxz = snap ? 1 : 1 - Math.exp(-CAM.follow * dt), kyv = snap ? 1 : 1 - Math.exp(-CAM.followY * dt);
       if (snap) api.focus.copy(target);
       else { api.focus.x += (target.x - api.focus.x) * kxz; api.focus.z += (target.z - api.focus.z) * kxz; api.focus.y += (target.y - api.focus.y) * kyv; }
       behind(want, yaw, pitch, dist).add(api.focus);
@@ -250,8 +244,6 @@ export function createCameraRig(game, width, height) {
       }
       camera.position.copy(pos);
       camera.lookAt(api.focus);
-      // occluder fade corridor: camera → hero on the ground
-      FADE.uA.value.set(pos.x, pos.z); FADE.uB.value.set(h.x, h.z);
       // micro-kicks: damped one-rebound thump, rotation in screen space, ≤ kickMaxPx
       let sx = 0, sy = 0;
       for (let i = kicks.length - 1; i >= 0; i--) {
@@ -269,12 +261,6 @@ export function createCameraRig(game, width, height) {
       }
       camera.updateProjectionMatrix();
       camera.updateMatrixWorld();
-      // see-through window: the hero's screen capsule (feet → above the head) for occlusion.js
-      pv.set(h.x, h.y + 0.35, h.z).project(camera); FADE.uCutA.value.set(pv.x, pv.y);
-      pv.set(h.x, h.y + 1.55, h.z).project(camera); FADE.uCutB.value.set(pv.x, pv.y);
-      pv.set(h.x, h.y + 0.95, h.z).applyMatrix4(camera.matrixWorldInverse);
-      FADE.uCutR.value = CAM.cutR / (Math.max(0.5, -pv.z) * Math.tan(camera.fov * DEG / 2));
-      FADE.uCutE.value = 2 * CAM.cutEdgePx / viewH; FADE.uAsp.value = camera.aspect;
     },
     focus: new THREE.Vector3(),
   };

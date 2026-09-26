@@ -10,8 +10,9 @@
 import * as THREE from 'three';
 import { sculpt, shade, boxesGeometry } from '../core/voxel.js';
 import { ST, KIND, CROWD } from './crowd.js';
-import { patchHitMaterial, hitAttr, hitGlow, recoilPose } from '../combat/hitfx.js';   // hit-impact: victim flash/tint + recoil pose
-import { fadeOccluder, FADE, lensSide } from '../camera/occlusion.js';   // camera part: soldiers between camera and hero dither out
+import { patchHitMaterial, hitGlow } from '../combat/hitfx.js';   // hit-impact: victim flash/tint
+import { hash01 } from '../core/rng.js';
+import { HUD_TAG_R } from '../ui/hud.js';
 
 const V = 0.042;
 const b = (a, bb, c, paint) => ({ a, b: bb, c, paint });
@@ -134,8 +135,8 @@ function weaponGeos() {
   return { spear, sword, glaive, pole, shield };
 }
 
-/** All crowd geometries (exported for the triangle-count check). */
-export function buildCrowdGeometries() {
+/** All crowd geometries. */
+function buildCrowdGeometries() {
   const g = {};
   const grunt = bodyParts(GRUNT, false), off = bodyParts(OFFICER, true);
   for (const k of ['hips', 'torso', 'head', 'crest', 'arm', 'thigh', 'shin']) g[k] = sculpt(grunt[k], V, 0.12);
@@ -179,12 +180,52 @@ function flagTexture() {
 
 // pose channels (per soldier): torso, head, armR, armL, thighR, thighL (rx,ry,rz) · shinR, shinL (rx) · weapR, weapL (rx,ry,rz)
 const TO = 0, HE = 3, AR = 6, AL = 9, TR = 12, TL = 15, SR = 18, SL = 19, WR = 20, WL = 23, NCH = 26;
-const CHN = { TO, HE, AR, AL, TR, TL, SR, SL, WR, WL };   // hit-impact: channel offsets for recoilPose (combat/hitfx.js)
 const GROUP = [0, 1, 2, 3, 2];                  // kind → pose group: 0 spear, 1 sword+shield, 2 glaive, 3 standard-bearer
 const TIP = [1.72, 0.86, 2.25, 2.7];             // weapon tip distance along +Z per group
 const h01 = (i, k = 0) => (((i + 1) * 2654435761 + k * 40503) >>> 0) / 4294967296;
 const legH = (a, bb, rz) => (0.42 * Math.cos(a) + 0.42 * Math.cos(a + bb)) * Math.cos(rz);   // hip → sole height
-const smooth = (x) => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x));
+const smoothstep = THREE.MathUtils.smoothstep;
+
+// ---- recoil pose (hit-impact): the DW flinch. A struck soldier snaps its head back and throws its arms up and back
+// within ≈ 2 sf, stumbles with one knee up, holds for ≈ 12 sf, then drops back to guard. There are three variants per
+// soldier (both arms flung up and wide / one arm up with a twist / doubled over), mirrored, with jittered amplitude and
+// snap speed, so a 15-body band reads as a rippling wave, not clones. Channel values are (rx, ry, rz): torso/head rx < 0
+// leans back; arm rx ≈ -2.5 is raised overhead, arm rz pushes it out (right arm < 0, left arm > 0); thigh rx < 0 swings
+// the knee forward; shin = knee bend; weapon angles are relative to the hand.
+const RECOIL = [
+  { // thrown back, both arms flung up and back, one knee kicked up
+    TO: [-0.78, 0, 0.06], HE: [-0.75, 0, 0], AR: [-2.4, 0.2, -0.95], AL: [-2.3, -0.2, 1.0],
+    TR: [0.32, 0, -0.14], TL: [-0.6, 0, 0.2], SR: 0.2, SL: 1.0, WR: [1.1, 0, 0], WL: [0.5, 0, 0] },
+  { // twisted: one arm flung up and back, the other thrown out wide, head turned away
+    TO: [-0.62, 0.55, 0.2], HE: [-0.65, -0.35, 0.1], AR: [-2.85, 0, -0.35], AL: [-0.95, 0, 1.35],
+    TR: [0.4, 0, -0.18], TL: [-0.35, 0, 0.3], SR: 0.35, SL: 0.7, WR: [1.3, 0, 0], WL: [0.3, 0, 0] },
+  { // doubled over the blow, arms thrown forward and out, knees buckling
+    TO: [0.72, 0, 0.1], HE: [0.2, 0.25, 0], AR: [-1.35, 0, -0.75], AL: [-1.25, 0, 0.8],
+    TR: [-0.55, 0, -0.2], TL: [-0.2, 0, 0.18], SR: 1.1, SL: 0.8, WR: [0.9, 0, 0], WL: [0.4, 0, 0] },
+];
+
+/** Recoil pose targets for a HURT / KNOCK soldier into T. Returns the blend rate (1/s), or 0 once the recoil is over
+ *  (the caller then blends back to its guard stance). */
+function recoilPose(T, i, s, t, sd) {
+  const knock = s === ST.KNOCK, hold = knock ? 16 : 12;
+  if (t >= hold) return 0;
+  const r = hash01(i, 97), v = RECOIL[r < 0.5 ? 0 : r < 0.82 ? 1 : 2];
+  const amp = 0.88 + 0.24 * hash01(i, 98), m = sd;               // m = -1 mirrors left ↔ right
+  const drift = Math.min(t, 8) * 0.03;                           // the blow keeps carrying the arms back a little
+  const put = (k, a, x = 0) => { T[k] = (a[0] - x) * amp; T[k + 1] = a[1] * amp * m; T[k + 2] = a[2] * amp * m; };
+  put(TO, v.TO, drift); put(HE, v.HE);
+  // limbs: mirrored soldiers swap sides (a roll that pushes the right arm out pushes the left arm out when negated)
+  put(m > 0 ? AR : AL, v.AR, drift); put(m > 0 ? AL : AR, v.AL, drift);
+  put(m > 0 ? TR : TL, v.TR); put(m > 0 ? TL : TR, v.TL);
+  T[m > 0 ? SR : SL] = v.SR; T[m > 0 ? SL : SR] = v.SL;
+  T[WR] = v.WR[0]; T[WL] = v.WL[0];
+  if (knock) {                                                   // officers: stumbling steps back
+    const st = Math.sin(t * 0.5) * 0.35;
+    T[TL] += st; T[TR] -= st;
+  }
+  // snap in on the contact frames (per-soldier speed → the band ripples), then hold
+  return t < 2 ? 55 + 45 * hash01(i, 99) : 16;
+}
 
 /** Dithered dissolve for fragments closer than `near` metres to the camera (DW-style: nothing blocks the lens). */
 function nearFade(material, near, extra) {
@@ -219,20 +260,21 @@ export function createCrowdView(scene, game) {
       #endif`);
   });
   patchHitMaterial(mat);                                     // hit-impact: victim flash/tint (src/combat/hitfx.js)
-  fadeOccluder(mat);                                         // camera part: occluder fade (src/camera/occlusion.js)
   const meshes = [];
   const proxyMat = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false }), proxies = [];
   /** shadow: true (the mesh casts), false, or a proxy geometry that casts instead (shares the instance matrices) */
   const mk = (geo, cap, material = mat, shadow = true) => {
-    const m = new THREE.InstancedMesh(geo, material, Math.max(1, cap));
+    const n = Math.max(1, cap);
+    const m = new THREE.InstancedMesh(geo, material, n);
     m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(Math.max(1, cap) * 3).fill(1), 3);
+    m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3).fill(1), 3);
     m.instanceColor.setUsage(THREE.DynamicDrawUsage);
     m.castShadow = shadow === true; m.receiveShadow = true; m.frustumCulled = false; m.count = 0;
-    if (material === mat) m.geometry.setAttribute('aHit', hitAttr(cap));   // hit-impact: per-instance victim glow
+    // hit-impact: per-instance victim glow
+    if (material === mat) m.geometry.setAttribute('aHit', new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3).setUsage(THREE.DynamicDrawUsage));
     scene.add(m); meshes.push(m);
     if (shadow && shadow !== true) {
-      const p = new THREE.InstancedMesh(shadow, proxyMat, Math.max(1, cap));
+      const p = new THREE.InstancedMesh(shadow, proxyMat, n);
       p.instanceMatrix = m.instanceMatrix; p.castShadow = true; p.frustumCulled = false; p.count = 0;
       scene.add(p); proxies.push([p, m]);
     }
@@ -253,7 +295,7 @@ export function createCrowdView(scene, game) {
   const flagGeo = new THREE.PlaneGeometry(0.9, 1.5, 4, 6).rotateX(Math.PI / 2).translate(0.5, 0, 1.78);
   const flagMat = new THREE.MeshStandardMaterial({ map: flagTexture(), side: THREE.DoubleSide, alphaTest: 0.5, roughness: 0.9 });
   // camera part (r3): flags dissolve only near the lens (was 7 m, which screen-doored every banner around the hero
-  // into a chain-mail pattern); flags between the lens and the hero get the camera's see-through window instead
+  // into a chain-mail pattern)
   nearFade(flagMat, 3.2, (sh) => {
     sh.uniforms.uTime = uTime;
     sh.vertexShader = 'uniform float uTime;\n' + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
@@ -261,7 +303,6 @@ export function createCrowdView(scene, game) {
       float fu = clamp((position.x - 0.05) / 0.9, 0.0, 1.0);
       transformed.y += (sin(uTime * 3.6 + position.x * 3.2 - position.z * 1.4 + fph) * 0.1 + sin(uTime * 6.1 + position.z * 2.3 + fph) * 0.03) * fu;`);
   });
-  fadeOccluder(flagMat, 0.3);                                // camera part: see-through window (src/camera/occlusion.js)
   M.flag = mk(flagGeo, G, flagMat, false);
   const markerMat = new THREE.MeshBasicMaterial({ vertexColors: true, color: new THREE.Color(0.85, 0.8, 0.75), fog: false });
   nearFade(markerMat, 5);
@@ -358,7 +399,7 @@ export function createCrowdView(scene, game) {
       if (t < w - 3) {                                                                // wind-up: coil and hold (telegraph)
         // big overhead coil read at gameplay distance: weapon high over the head, body arched back on a wide stance;
         // the last 14 sf he trembles at full stretch
-        const hot = t >= w - 14, tr = (hot ? Math.sin(t * 2.3) * 0.09 : Math.sin(t * 1.9) * 0.04) * smooth(t / 12);
+        const hot = t >= w - 14, tr = (hot ? Math.sin(t * 2.3) * 0.09 : Math.sin(t * 1.9) * 0.04) * smoothstep(t, 0, 12);
         if (g === 0) { set3(TO, -0.22, -0.45, 0); set3(HE, -0.2, 0.4, 0); set3(AR, -2.75, 0, -0.35); T[WR] = -0.2 - T[AR] + tr; set3(AL, -1.9, 0.2, 0.2); }
         else if (g === 1) { set3(TO, -0.24, 0.3, 0); set3(AR, -3.0, 0, -0.2); T[WR] = -4.0 - T[AR] + tr; set3(AL, -1.35, 0, 0.3); T[WL] = 1.2; }
         else { set3(TO, -0.24, -0.55, 0); set3(HE, -0.1, 0.45, 0); set3(AR, -2.7, 0, -0.5); T[WR] = -3.4 - T[AR] + tr; set3(AL, -2.4, 0, 0.45); }
@@ -376,8 +417,8 @@ export function createCrowdView(scene, game) {
     }
     T.fill(0);
     if (s === ST.HURT || s === ST.KNOCK) {
-      // hit-impact: DW flinch — arms flung up and back, stumble, then back to guard (src/combat/hitfx.js recoilPose)
-      const rate = recoilPose(T, CHN, crowd, i, s, t, sd);
+      // hit-impact: DW flinch — arms flung up and back, stumble, then back to guard (recoilPose)
+      const rate = recoilPose(T, i, s, t, sd);
       if (rate) return rate;
       stance(i, g, ST.GUARD, 0, 0); return 8;
     }
@@ -388,7 +429,7 @@ export function createCrowdView(scene, game) {
       return 16;
     }
     if (s === ST.GETUP) {
-      const u = smooth(t / 26);
+      const u = smoothstep(t, 0, 26);
       if (u > 0.55) { stance(i, g, ST.GUARD, 0, 0); return 10; }
       set3(TO, 0.5, 0, 0); set3(AR, -0.5, 0, -0.45); set3(AL, -0.5, 0, 0.45); T[WR] = 0.3;
       set3(TL, -1.3, 0, 0.2); set3(TR, -1.1, 0, -0.2); T[SL] = 1.6; T[SR] = 1.5;
@@ -489,8 +530,8 @@ export function createCrowdView(scene, game) {
       if (hotStrike) { push(M.flare, _tmp, null); _tmp.scale(_v.set(0.45, 0.45, 0.45)); }
       push(M.glint, _tmp, _glintCold);
     }
-    // hud part (r4): inside game.hudTagR (set by the HUD) the HUD's ▼▼ name/HP tag marks the officer; skip the 3D ▼
-    if (officer && s !== ST.DEAD && !((crowd.x[i] - game.hero.x) ** 2 + (crowd.z[i] - game.hero.z) ** 2 < (game.hudTagR || 0) ** 2)) {
+    // hud part (r4): inside HUD_TAG_R the HUD's ▼▼ name/HP tag marks the officer; skip the 3D ▼
+    if (officer && s !== ST.DEAD && !((crowd.x[i] - game.hero.x) ** 2 + (crowd.z[i] - game.hero.z) ** 2 < HUD_TAG_R ** 2)) {
       _tmp.makeRotationY(time * 2.2).scale(_v.set(0.7, 0.7, 0.7)).setPosition(crowd.x[i], y + 1.35 * sc + 0.62 + Math.sin(time * 3 + i) * 0.06, crowd.z[i]);
       push(M.marker, _tmp, null);
     }
@@ -500,22 +541,18 @@ export function createCrowdView(scene, game) {
     update(dt) {
       time += dt; uTime.value = time; frameNo++;
       for (const m of meshes) m.count = 0;
-      // lens clear for flying bodies: a soldier airborne above 1 m and nearer the lens than the hero (along the lens →
-      // hero ground axis, last frame's rig) is not drawn, whole, so blow-aways and launches never fill the frame
-      const A = FADE.uA.value, abx = FADE.uB.value.x - A.x, abz = FADE.uB.value.y - A.y, LL = abx * abx + abz * abz;
       for (let i = 0; i < N; i++) {
         const s = crowd.st[i];
-        if (s === ST.OFF || (s === ST.AIR && FADE.uOn.value && crowd.y[i] > 1 && (crowd.x[i] - A.x) * abx + (crowd.z[i] - A.y) * abz < LL)) { seen[i] = 0; continue; }
-        if (lensSide(i, crowd.x[i], crowd.z[i], crowd.type[i] ? Infinity : crowd.token[i] || s === ST.ATTACK ? 3 : s === ST.HURT || s === ST.KNOCK || crowd.flash[i] ? 2.5 : 0)) { seen[i] = 0; continue; }   // camera part (r4): open ground lens-side
+        if (s === ST.OFF) { seen[i] = 0; continue; }
         // standing soldiers (idle ranks) are recomputed every 4th frame and replayed in between
         if (s === ST.IDLE && seen[i] && crowd.type[i] === 0 && !crowd.flash[i] && ((frameNo + i) & 3)) replay(i);
         else write(i, s, (s === ST.IDLE ? 4 : 1) * dt);
       }
       for (const m of meshes) {
-        m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true;
+        m.instanceMatrix.needsUpdate = true; m.instanceColor.needsUpdate = true;
         if (m.geometry.attributes.aHit) m.geometry.attributes.aHit.needsUpdate = true;
+        m.visible = m.count > 0;                                                          // no empty draw calls
       }
-      for (const m of meshes) m.visible = m.count > 0;                                   // no empty draw calls
       for (const [p, m] of proxies) { p.count = m.count; p.visible = m.visible; }
     },
   };

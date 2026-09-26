@@ -13,26 +13,19 @@
 // foot becomes a lifted step. The pose's `plant` channel = 1 tells the rig the feet are in the hero-facing frame. Every
 // clip starts on the feet the previous move of its string left at its cancel frame (ENTRY), so strings never re-stance.
 import { P, clip, sampleClip, spearAbout, STANCE, CH, POSE_SIZE } from '../rig.js';
-import { MOVES } from '../moves.js';
+import { MOVES, lungeAt } from '../moves.js';
 
 const D2R = Math.PI / 180;
-/** Forward displacement (m) the combo system has applied by move frame f (same eases as combo.js). */
-function lungeAt(id, f) {
-  let d = 0;
-  for (const [a, b, dist, e] of MOVES[id].lunge || []) {
-    const u = Math.min(1, Math.max(0, (f - a) / (b - a)));
-    d += dist * (e === 'lin' ? u : 1 - (1 - u) * (1 - u));
-  }
-  return d;
-}
 const ST = STANCE;
-const FL0 = [0.17, 0.08, 0.3, 0, 15], FR0 = [-0.2, 0.08, -0.26, 0, -30];     // stance feet (root space)
 /** Stance feet at the end of move `id` (move-start coords: stance + the move's whole lunge). */
-const endFeet = (id, extra = {}) => { const d = lungeAt(id, MOVES[id].frames); return { fL: [0.17, 0.08, 0.3 + d, 0, 15], fR: [-0.2, 0.08, -0.26 + d, 0, -30], ...extra }; };
+const endFeet = (id) => {
+  const d = lungeAt(MOVES[id], MOVES[id].frames), fwd = (v) => v.map((x, i) => (i === 2 ? x + d : x));
+  return { fL: fwd(ST.footL), fR: fwd(ST.footR) };
+};
 /** Foot given root-relative in the BODY frame (stance-like coords) at spin `sp` and move frame f → move-start coords. */
 const body = (id, f, sp, v) => {
   const a = sp * D2R, c = Math.cos(a), s = Math.sin(a);
-  return [v[0] * c + v[2] * s, v[1], -v[0] * s + v[2] * c + lungeAt(id, f), v[3] || 0, v[4] + sp];
+  return [v[0] * c + v[2] * s, v[1], -v[0] * s + v[2] * c + lungeAt(MOVES[id], f), v[3] || 0, v[4] + sp];
 };
 /** A key that carries only feet (either may be null). */
 const ft = (f, fL, fR) => [f, { feet: 1, fL, fR }];
@@ -80,7 +73,7 @@ const fdeg = (v, yaw) => [v[0], v[1], v[2], v[3] || 0, v[4] == null ? yaw : v[4]
  */
 function bakeFeet(id, keys, entry) {
   const F = MOVES[id].frames;
-  const tracks = [['fL', CH.footL, FL0, 15, 0], ['fR', CH.footR, FR0, -30, 1]].map(([k, ch, st, yaw, j]) => {
+  const tracks = [['fL', CH.footL, ST.footL, 15, 0], ['fR', CH.footR, ST.footR, -30, 1]].map(([k, ch, st, yaw, j]) => {
     const fk = keys.filter(([f, s]) => s[k] && f > 0).map(([f, s]) => [f, fdeg(s[k], yaw)]);
     if (!fk.length || fk[fk.length - 1][0] < F) fk.push([F, fdeg(endFeet(id)[k], yaw)]);
     const tk = [[0, entry ? entry[j] : st], ...fk].map(([f, v]) => [Math.min(1, f / F), P({ [k === 'fL' ? 'footL' : 'footR']: v }), 'lin']);
@@ -98,7 +91,7 @@ function bakeFeet(id, keys, entry) {
     K.forEach((w, k) => { if (f + k <= F) dip[f + k] = Math.min(dip[f + k], -0.04 * v * w); });
   }
   const tab = new Float32Array((F + 1) * 10);
-  [OL, OR].forEach((O, j) => O.forEach((r, f) => { r[2] -= lungeAt(id, f); tab.set(r, f * 10 + j * 5); }));
+  [OL, OR].forEach((O, j) => O.forEach((r, f) => { r[2] -= lungeAt(MOVES[id], f); tab.set(r, f * 10 + j * 5); }));
   const feet = (t, out) => {
     const x = Math.min(F, Math.max(0, t * F)), i = Math.min(F - 1, Math.floor(x)), u = x - i;
     for (let j = 0; j < 10; j++) out[CH.footL + j] = tab[i * 10 + j] + (tab[i * 10 + 10 + j] - tab[i * 10 + j]) * u;
@@ -106,7 +99,7 @@ function bakeFeet(id, keys, entry) {
     out[CH.plant] = 1;
   };
   const row = (f, j) => { const r = tab.subarray(f * 10 + j * 5, f * 10 + j * 5 + 5); return [r[0], r[1], r[2], r[3] / D2R, r[4] / D2R]; };
-  return { tab, feet, exit: [row(MOVES[id].cancel, 0), row(MOVES[id].cancel, 1)] };
+  return { feet, exit: [row(MOVES[id].cancel, 0), row(MOVES[id].cancel, 1)] };
 }
 /** Frame-keyed clip: keys [frame, spec, ease]. Body keys make the pose clip; fL/fR (any key, incl. ft()) make the feet. */
 function clipF(id, keys) {
@@ -118,6 +111,14 @@ function clipF(id, keys) {
   return c;
 }
 const hit = (id, i = 0) => MOVES[id].hits[i].f;
+/** Walking step keys: each [side, f0, f1, x, z, yaw] lifts that foot (by `lift`, toe `pitch`°) from its spot in `pos`
+ *  (updated) to (x, z). */
+const stepKeys = (steps, pos, lift, pitch) => steps.flatMap(([side, a, b, x, z, yaw]) => {
+  const p = pos[side], k = side === 'L' ? 'fL' : 'fR';
+  pos[side] = [x, z];
+  return [[a, { feet: 1, [k]: [p[0], 0.08, p[1], 0, yaw] }], [(a + b) / 2, { feet: 1, [k]: [(p[0] + x) / 2, lift, (p[1] + z) / 2, pitch, yaw] }],
+    [b, { feet: 1, [k]: [x, 0.08, z, 0, yaw] }]];
+});
 /** Stance with the spear yaw/elev offset by whole turns, so a clip that spun the spear ends without unwinding it. */
 const stTurn = (yawTurns, elevTurns, extra) => ({ ...ST, spear: [...ST.spear.slice(0, 3), ST.spear[3] + 360 * yawTurns, ST.spear[4] + 360 * elevTurns, 0], ...extra });
 
@@ -125,10 +126,11 @@ const K = (t, spec, e) => [t, P(spec), e];
 const LUNGE = { hips: [0, 0.8, 0.2], footL: [0.2, 0.08, 0.66, 0, 10], footR: [-0.24, 0.08, -0.36, 0, -60] };
 const END = [1, P()];
 
-// thrust pose helper: spear straight ahead at height y, body side-on, front hand sliding back toward the rear hand
-const thrust = (z, y = 1.18, yaw = 0, elev = 0, extra = {}) => ({
+// thrust pose helper: spear straight ahead at waist height, tip a little down, body side-on, front hand sliding back
+// toward the rear hand
+const thrust = (z, extra) => ({
   ...LUNGE, hipsR: [4, -70, 0], spine: [6, -8, 0], chest: [2, -6, 0], head: [0, 0, 0],
-  spear: [-0.2, y, z, yaw, elev, 90], gripL: 0.32, ...extra,
+  spear: [-0.2, 1.1, z, 0, -4, 90], gripL: 0.32, ...extra,
 });
 // spear held out to the left side (for spin sweeps), body squared
 const SIDE = { hipsR: [4, 10, 0], spine: [6, 10, 0], chest: [2, 10, 0], head: [0, 0, 0], spear: [-0.02, 1.08, 0.32, 88, -4, 0], gripL: 0.38 };
@@ -149,7 +151,7 @@ function n1() {
     [s - 3, { ...coil, chest: [-10, 20, 8], spear: [-0.12, 1.64, -0.08, -24, 156, 90], gripL: 0.4,
       fL: [0.2, 0.18, 0.64, -12] }, 'io'],                                                           // held chamber, lead knee up
     [s - 1, { hips: [0, 0.88, 0], hipsR: [2, 4, 0], spine: [0, 4, 0], chest: [-2, 6, 4], head: [0, 2, 0],
-      spear: [-0.12, 1.64, 0.1, -24, 100, 90], gripL: 0.44, fL: FL, fR: FR0 }, 'lin'],             // over the top, foot lands
+      spear: [-0.12, 1.64, 0.1, -24, 100, 90], gripL: 0.44, fL: FL, fR: ST.footR }, 'lin'],             // over the top, foot lands
     [s, { hips: [0, 0.84, 0.04], hipsR: [8, -12, 0], spine: [4, -2, 0], chest: [4, -4, -2], head: [4, -4, 0],
       spear: [-0.14, 1.34, 0.3, -23, 12, 90], gripL: 0.48 }, 'lin'],                                 // contact: blade level at the victims
     [s + 2, { hips: [0, 0.8, 0.07], hipsR: [12, -24, 0], spine: [7, -6, 0], chest: [8, -9, -4], head: [8, -9, 0],
@@ -286,7 +288,7 @@ function n5() {
     rf(c + 13, -330, [-0.22, 0.2, -0.24, -10, -30]),
     rf(c + 16, -350, [-0.2, 0.08, -0.26, 0, -30]),
     [F, stTurn(0, 1, { spin: -360 })],
-    ft(F, [0.17, 0.08, 0.3 + lungeAt('n5', F), 0, 15 - 360], body('n5', F, -360, [-0.2, 0.08, -0.26, 0, -30])),
+    ft(F, [0.17, 0.08, 0.3 + lungeAt(MOVES.n5, F), 0, 15 - 360], body('n5', F, -360, [-0.2, 0.08, -0.26, 0, -30])),
   ]);
 }
 function n6() {
@@ -395,13 +397,7 @@ function c3() {
   const [L0, R0] = BUILT.n2.exit;
   // walk into the crowd while the spear wheels at the right side: four steps, one foot at a time
   const steps = [['R', 12, 16, -0.22, 0.46, -30], ['L', 17, 21, 0.2, 0.94, 15], ['R', 22, 26, -0.22, 0.84, -30], ['L', 27, 31, 0.2, 1.32, 15]];
-  const pos = { L: [L0[0], L0[2]], R: [R0[0], R0[2]] }, fk = [];
-  for (const [side, a, b, x, z, yaw] of steps) {
-    const p = pos[side], k = side === 'L' ? 'fL' : 'fR';
-    fk.push([a, { feet: 1, [k]: [p[0], 0.08, p[1], 0, yaw] }], [(a + b) / 2, { feet: 1, [k]: [(p[0] + x) / 2, 0.22, (p[1] + z) / 2, -14, yaw] }],
-      [b, { feet: 1, [k]: [x, 0.08, z, 0, yaw] }]);
-    pos[side] = [x, z];
-  }
+  const fk = stepKeys(steps, { L: [L0[0], L0[2]], R: [R0[0], R0[2]] }, 0.22, -14);
   const keys = [[0, { ...ST }],
     [s1 - 4, { hips: [0, 0.84, 0.04], hipsR: [6, -26, 0], spine: [4, -6, 0], chest: [2, -8, 0], head: [2, 4, 0],
       spear: spearAbout([-0.46, 1.42, 0.26], -4, 110, 90, 0.64), gripR: 0.64, gripL: 0.64, lfree: 0.6, armL: [-30, 0, 40, 30] }, 'out'], ...fk];
@@ -459,7 +455,7 @@ function c4() {
     [c, { ...held, spear: [-0.02, 1.04, 0.3, 72, -4, 0], hips: [0, 0.74, 0.04] }, 'io'],
     ft(c, FL, [...PR, 0, 690]),
     [F, { ...ST, spin: 720 }],
-    ft(F, [0.17, 0.08, 0.3 + lungeAt('c4', F), 0, 735], [-0.2, 0.08, -0.26 + lungeAt('c4', F), 0, 690]));
+    ft(F, [0.17, 0.08, 0.3 + lungeAt(MOVES.c4, F), 0, 735], [-0.2, 0.08, -0.26 + lungeAt(MOVES.c4, F), 0, 690]));
   for (let f = s; f <= s + 6; f++) keys.push(ft(f, null, body('c4', f, spAt.get(f), [-0.26, f < s + 6 ? 0.26 : 0.16, -0.22, -20, -40])));   // rear leg swings round
   for (let f = s + 9; f <= s + 15; f += 2) keys.push(ft(f, body('c4', f, spAt.get(f), [0.26, 0.24, 0.16, -20, 20]), null));   // lead leg swings round
   return clipF('c4', keys);
@@ -470,13 +466,8 @@ function c5() {
   const [L0, R0] = BUILT.n4.exit;
   // crouched running steps carry the low sweep 2.2 m into the crowd (lead foot lands ahead of the root every stride)
   const run = [['R', 13, 17, -0.34, 0.86, -60], ['L', 16, 20, 0.36, 1.42, 30], ['R', 20, 24, -0.34, 1.86, -60], ['L', 24, 28, 0.34, 2.3, 30], ['L', 34, 38, 0.3, 2.62, 25]];
-  const pos = { L: [0.36, L0[2]], R: [-0.36, R0[2]] }, fk = [ft(6, [0.36, 0.08, L0[2], 0, 30], null), ft(8, null, [-0.36, 0.08, R0[2], 0, -60])];
-  for (const [side, a, b, x, z, yaw] of run) {
-    const p = pos[side], k = side === 'L' ? 'fL' : 'fR';
-    fk.push([a, { feet: 1, [k]: [p[0], 0.08, p[1], 0, yaw] }], [(a + b) / 2, { feet: 1, [k]: [(p[0] + x) / 2, 0.26, (p[1] + z) / 2, -16, yaw] }],
-      [b, { feet: 1, [k]: [x, 0.08, z, 0, yaw] }]);
-    pos[side] = [x, z];
-  }
+  const fk = [ft(6, [0.36, 0.08, L0[2], 0, 30], null), ft(8, null, [-0.36, 0.08, R0[2], 0, -60]),
+    ...stepKeys(run, { L: [0.36, L0[2]], R: [-0.36, R0[2]] }, 0.26, -16)];
   return clipF('c5', [
     [0, { ...ST }],
     ...fk,
@@ -529,7 +520,7 @@ function c6() {
     prevSpot[side] = land;
   }
   const Y = 1440;                                                   // spear yaw after the twirl (4 turns): forward again
-  const lz = lungeAt('c6', s2);
+  const lz = lungeAt(MOVES.c6, s2);
   keys.push(
     ft(59, body('c6', 59, -360, [0.2, 0.2, 0.34, -20, 15]), body('c6', 59, -360, [-0.22, 0.16, -0.16, 20, -30])),
     [s2 - 7, { hips: [0, 1.7, 0.2], hipsR: [-10, 0, 0], spine: [-6, 0, 0], chest: [-8, 0, 0], head: [8, 0, 0], spin: -360,
@@ -555,8 +546,8 @@ export const ATTACK_CLIPS = {
   // Dash attack: running lunge thrust
   dash: clip([
     [0, P({ hips: [0, 0.84, 0.05], hipsR: [16, -40, 0], chest: [10, -10, 0], spear: [-0.3, 1.06, -0.3, 4, 6, 90], gripL: 0.5 })],
-    K(0.18, thrust(0.66, 1.1, 0, -4, { hips: [0, 0.76, 0.3], footL: [0.2, 0.08, 0.78, 0, 10], footR: [-0.26, 0.12, -0.44, 30, -60] }), 'snap'),
-    K(0.45, thrust(0.62, 1.1, 0, -4, { hips: [0, 0.78, 0.28], footL: [0.2, 0.08, 0.72, 0, 10] })),
+    K(0.18, thrust(0.66, { hips: [0, 0.76, 0.3], footL: [0.2, 0.08, 0.78, 0, 10], footR: [-0.26, 0.12, -0.44, 30, -60] }), 'snap'),
+    K(0.45, thrust(0.62, { hips: [0, 0.78, 0.28], footL: [0.2, 0.08, 0.72, 0, 10] })),
     END,
   ]),
   // Jump attack: aerial diagonal cut downward
@@ -572,7 +563,7 @@ export const ATTACK_CLIPS = {
   // Jump charge: hang with the spear raised point-down, dive (moveT holds before landFrame until touchdown), stab the
   // blade into the ground on impact (ground contact keeps the tip on the floor) and hold the crouch.
   jc: (() => {
-    const L = MOVES.jc.landFrame, F = MOVES.jc.frames, D = Math.max(7, MOVES.jc.plunge ? MOVES.jc.plunge[0] : 7);
+    const L = MOVES.jc.landFrame, F = MOVES.jc.frames, D = MOVES.jc.plunge[0];
     const hang = { hips: [0, 1.0, 0.04], hipsR: [-10, -10, 0], spine: [-6, 0, 0], chest: [-8, 0, 0], head: [10, 0, 0],
       footL: [0.16, 0.5, 0.14, -30, 10], footR: [-0.18, 0.42, -0.12, 20, -20], spear: [-0.1, 1.78, 0.24, 0, -74, 90], gripL: 0.34 };
     const dive = { ...hang, hips: [0, 0.96, 0.1], hipsR: [16, -10, 0], chest: [10, 0, 0], head: [16, 0, 0],
@@ -604,7 +595,7 @@ export const MOVE_FEET = {
   // integration r2: keyed off moves.js dash lunge (combo-system retimed it to a long run + leaping lunge): a stride every
   // 5 sf landing ~0.3 m ahead of the root through the run segment, push off as the lunge starts, front foot lands first
   dash: (() => {
-    const [[, r1], [l0, l1]] = MOVES.dash.lunge, la = (f) => lungeAt('dash', f), k = [], end = la(MOVES.dash.frames);
+    const [[, r1], [l0, l1]] = MOVES.dash.lunge, la = (f) => lungeAt(MOVES.dash, f), k = [], end = la(MOVES.dash.frames);
     const at = (j, f, v) => ft(f, j ? null : v, j ? v : null);                      // j: 0 = left foot, 1 = right foot
     const spot = [[0.17, 0.3], [-0.2, -0.26]], X = [0.16, -0.16], Y = [5, -5];
     let f = 3, j = 1;
@@ -624,12 +615,10 @@ export const MOVE_FEET = {
   c5: ATTACK_CLIPS.c5.feet,
   // jump charge: tucked in the air, stab stance on landing, one step per foot back to stance after the cancel frame
   jc: (() => {
-    const L = MOVES.jc.landFrame, D = Math.max(7, MOVES.jc.plunge ? MOVES.jc.plunge[0] : 7), c = MOVES.jc.cancel;
+    const L = MOVES.jc.landFrame, D = MOVES.jc.plunge[0], c = MOVES.jc.cancel;
     const SL = [0.3, 0.08, 0.5, 0, 25], SR = [-0.3, 0.08, -0.3, 0, -50];
     return bakeFeet('jc', [ft(1, [0.16, 0.36, 0.2, -20, 10], [-0.18, 0.3, -0.12, 20, -20]), ft(4, [0.16, 0.5, 0.14, -30, 10], [-0.18, 0.42, -0.12, 20, -20]),
       ft(D - 1, [0.16, 0.5, 0.14, -30, 10], [-0.18, 0.42, -0.12, 20, -20]), ft(D + 2, [0.16, 0.36, 0.0, -10, 10], [-0.18, 0.4, -0.2, 20, -20]),
       ft(L - 1, [0.2, 0.2, 0.3, -10, 20], [-0.22, 0.2, -0.24, 10, -40]), ft(L, SL, SR), ft(c, SL, SR)], [[0.16, 0.36, 0.2, -20, 10], [-0.18, 0.3, -0.12, 20, -20]]).feet;
   })(),
 };
-
-export { STANCE };

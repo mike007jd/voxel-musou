@@ -105,13 +105,13 @@ const mirX = (bx, sx, c2 = 0) => (sx > 0 ? bx : { ...bx, a: [c2 - bx.b[0], bx.a[
  * (the rows overlap like scales; AO darkens under every lip) and the voxel tucked under the next lip is shaded, so every
  * row reads as plates with dark gaps. `trim` colours the lip of the lowest row; `jag` knocks out every 3rd voxel of it.
  */
-function lamellar(a, b, { base = C.W, rowH = 3, pw = 4, trim = null, jag = false, lipX = true, lipZ = true } = {}) {
+function lamellar(a, b, { base = C.W, rowH = 3, pw = 4, trim = null, jag = false, lipX = true } = {}) {
   const out = [], dark = shade(base, 0.6), tuck = shade(base, 0.8), hi = shade(base, 1.04);
   const seam = (x, y, z) => md(x + z + (Math.floor((y - a[1]) / rowH) & 1) * (pw >> 1), pw) === 0;
   out.push(B(a, b, (x, y, z) => (seam(x, y, z) ? dark : (y - a[1]) % rowH === rowH - 1 ? tuck : base)));
   for (let y = a[1]; y < b[1]; y += rowH) {
     const bottom = y === a[1];
-    out.push(B([a[0] - (lipX ? 1 : 0), y, a[2] - (lipZ ? 1 : 0)], [b[0] + (lipX ? 1 : 0), y + 1, b[2] + (lipZ ? 1 : 0)],
+    out.push(B([a[0] - (lipX ? 1 : 0), y, a[2] - 1], [b[0] + (lipX ? 1 : 0), y + 1, b[2] + 1],
       (x, yy, z) => (bottom && jag && md(x + z, 3) === 0 ? null : bottom && trim != null ? trim : seam(x, yy, z) ? dark : hi)));
   }
   return out;

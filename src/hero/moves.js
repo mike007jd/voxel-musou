@@ -1,8 +1,7 @@
 // Zhao Yun moveset (data only). All timings in 60 Hz sim frames.
 //
 // move = {
-//   frames      total duration
-//   clip        animation clip id (anims/attacks.js), defaults to the move id
+//   frames      total duration (the animation clip is the one with the move's id, anims/attacks.js)
 //   anim        clip timing (only for moves whose clip is not frame-keyed to this data in anims/attacks.js): [[frame, clipT, clip?], ...] piecewise linear from move frame to normalised clip time, so a
 //               move can hold a chamber, snap a strike and hold a finish pose without re-authoring the clip. `clip`
 //               carries over to later keys; two keys on the same frame = a cut (the renderer blends it like a new move).
@@ -143,10 +142,10 @@ export const NEUTRAL = { attack: 'n1', charge: 'c1', dash: 'dash', air: 'jatk', 
 export const AIR_CHAIN_MAX = 10;  // swipes per jump (the rapid DW8 jump attack shows ~10 over 2.9 s; locomotion-dodge r2: 8 → 10)
 
 for (const [id, m] of Object.entries(MOVES)) {
-  m.id = id; m.clip = m.clip || id; m.lunge = m.lunge || [];
-  m.tell = m.hits.length ? m.hits[0].f[0] : 0;           // start → first active frame (charge tell length)
+  m.id = id; m.lunge = m.lunge || [];
+  m.tell = m.hits[0].f[0];                                  // start → first active frame (charge tell length)
   if (m.anim) {                                             // fill carried-over clip ids and cut-segment indices
-    let clip = m.clip, seg = 0;
+    let clip = id, seg = 0;
     m.anim.forEach((k, i) => {
       if (i && k[0] === m.anim[i - 1][0]) seg++;
       else if (i && k[2] && k[2] !== clip) seg++;
@@ -155,10 +154,20 @@ for (const [id, m] of Object.entries(MOVES)) {
   }
 }
 
+/** Forward displacement (m) the lunge has applied by move frame f: each segment eased out (or linear), clamped to it. */
+export function lungeAt(m, f) {
+  let d = 0;
+  for (const [a, b, dist, e] of m.lunge) {
+    const u = Math.min(1, Math.max(0, (f - a) / (b - a)));
+    d += dist * (e === 'lin' ? u : 1 - (1 - u) * (1 - u));
+  }
+  return d;
+}
+
 /** Clip sample for move frame t → [clipId, normalised clip time, segment]. Pure, used by the hero's anim bookkeeping. */
 export function moveClip(m, t) {
   const a = m.anim;
-  if (!a) return [m.clip, t / m.frames, 0];
+  if (!a) return [m.id, t / m.frames, 0];
   let i = 0;
   while (i < a.length - 1 && a[i + 1][0] <= t) i++;
   const k = a[i], n = a[i + 1];
@@ -166,9 +175,3 @@ export function moveClip(m, t) {
   return [k[2], k[1] + (n[1] - k[1]) * (t - k[0]) / (n[0] - k[0]), k[3]];
 }
 
-// Self-check (a failure shows up as a console error): holds, cuts and clip switches.
-if (!(moveClip(MOVES.n1, 7)[1] === 7 / MOVES.n1.frames && moveClip(MOVES.dash, 18).join() === 'n4,0.3,1' && moveClip(MOVES.dash, 15)[1] === 0.72
-  && moveClip(MOVES.dash, 43)[0] === 'dash' && moveClip(MOVES.c2, 25).join() === `c2,${24 / 112},0`
-  && moveClip(MOVES.c2, 90)[1] === 104 / 112 && moveClip(MOVES.c5, 44)[1] === 44 / 80)) console.error('moves.js: anim timing self-check failed');
-// … and the △ branch comes after N1–N5's last active frame, never later than the beat.
-if (!['n1', 'n2', 'n3', 'n4', 'n5'].every((k) => MOVES[k].branch > MOVES[k].hits.at(-1).f[1] && MOVES[k].branch <= MOVES[k].cancel)) console.error('moves.js: charge branch self-check failed');

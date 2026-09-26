@@ -60,16 +60,11 @@ export function boxesGeometry(boxes) {
 
 /**
  * Voxel grid → geometry with only exposed faces.
- * fn(i,j,k) returns 0xRRGGBB for a filled voxel, or null/undefined/-1 for empty.
+ * grid[i + nx * (j + ny * k)] = 0xRRGGBB for a filled voxel, < 0 for empty.
  * origin = world position of voxel (0,0,0)'s min corner.
  */
-export function voxelGeometry(nx, ny, nz, size, fn, origin = [0, 0, 0]) {
-  const grid = new Int32Array(nx * ny * nz).fill(-1);
+function voxelGeometry(nx, ny, nz, size, grid, origin) {
   const at = (i, j, k) => (i < 0 || j < 0 || k < 0 || i >= nx || j >= ny || k >= nz ? -1 : grid[i + nx * (j + ny * k)]);
-  for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
-    const c = fn(i, j, k);
-    if (c != null && c >= 0) grid[i + nx * (j + ny * k)] = c;
-  }
   const b = makeBuilder();
   const [ox, oy, oz] = origin;
   for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
@@ -138,9 +133,9 @@ export function sculpt(boxes, v = 0.034, jitter = 0.09) {
       grid[idx] = c;
     }
   }
-  return voxelGeometry(n[0], n[1], n[2], v, (i, j, k) => {
-    const c = grid[i + n[0] * (j + n[1] * k)];
-    return c < 0 ? -1 : shade(c, 1 - jitter / 2 + hash01(i, j, k) * jitter);
-  }, o);
+  for (let k = 0, idx = 0; k < n[2]; k++) for (let j = 0; j < n[1]; j++) for (let i = 0; i < n[0]; i++, idx++) {
+    if (grid[idx] >= 0) grid[idx] = shade(grid[idx], 1 - jitter / 2 + hash01(i, j, k) * jitter);
+  }
+  return voxelGeometry(n[0], n[1], n[2], v, grid, o);
 }
 

@@ -10,10 +10,10 @@ function vnoise(x, z, seed) {
   const a = hash01(xi, zi, seed), b = hash01(xi + 1, zi, seed), c = hash01(xi, zi + 1, seed), d = hash01(xi + 1, zi + 1, seed);
   return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
 }
-export const noise2 = (x, z, seed = 1) => vnoise(x, z, seed) * 0.62 + vnoise(x * 2.3 + 7, z * 2.3 + 3, seed + 1) * 0.38;
+const noise2 = (x, z, seed = 1) => vnoise(x, z, seed) * 0.62 + vnoise(x * 2.3 + 7, z * 2.3 + 3, seed + 1) * 0.38;
 
 /** Paving mask 0..1: 1 = paved plaza/road, 0 = packed dirt. */
-export function paveMask(x, z, gateX) {
+function paveMask(x, z, gateX) {
   const r = Math.hypot(x, z);
   let m = noise2(x * 0.07, z * 0.07, 5) * 1.3 - 0.62;
   m += 0.8 * (1 - Math.min(1, Math.max(0, (r - 12) / 16)));                // central plaza (dust breaks through), frays out by ~28 m

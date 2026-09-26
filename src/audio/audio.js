@@ -5,7 +5,7 @@
 //  enemy grunts, death cries, body falls · dodge / jump / land / hurt · Musou gauge chime, activation flash + shout,
 //  close-up hush + charge drone swelling into the contact blast, stab flurry, pre-burst inhale, finishing blast + death
 //  chorus · reinforcement horn + army roar · foreground army shouts ·
-//  looping distant-battle bed, war drums and a power-chord battle riff (music=0 drops it) that swell with combat
+//  looping distant-battle bed, war drums and a power-chord battle riff that swell with combat
 //  intensity and duck under hits and the Musou.
 // Mix: sfx / voice / bed buses + convolution reverb send → master EQ (matched to the benchmark clips' octave balance) →
 // compressor (25 ms attack: transients pass) → soft-clip ceiling (≈ -2 dBFS, no clipping); ≈ -17 LUFS in crowd-fight
@@ -48,9 +48,7 @@ export function createAudio(game) {
                                               // (under bus, bed, voice, reverb return)
   let muFrame = -1;                           // last sim frame that voiced a Musou tick (several strikes share a frame)
   let mu = null;                              // current Musou timing (musou:start payload, frames)
-  let musicK = new URLSearchParams(location.search).get('music') === '0' ? 0 : 1;   // music=0 → battle bed + drums only
   let intensity = 0, lastT = performance.now(), drone = null, bedOn = false, nextShout = 0;
-  const lvl = { sfx: 1, vox: VOX };            // resting bus gains (the Musou dip returns to these)
   const last = new Map();                     // throttles
   const lastPick = new Map();
   const B = {};                               // filled progressively by the offline bake (combat sounds first)
@@ -81,8 +79,8 @@ export function createAudio(game) {
     sfx = ctx.createGain(); sfx.connect(mix);
     sides = SIDE.map(() => ctx.createGain());
     underBus = ctx.createGain(); underBus.connect(sides[0]).connect(sfx);
-    vox = ctx.createGain(); vox.gain.value = lvl.vox; vox.connect(sides[2]).connect(mix);
-    const rev = ctx.createConvolver(); rev.buffer = makeIR(1.5, 3.4);
+    vox = ctx.createGain(); vox.gain.value = VOX; vox.connect(sides[2]).connect(mix);
+    const rev = ctx.createConvolver(); rev.buffer = makeIR();
     revIn = ctx.createGain(); revIn.connect(rev); rev.connect(sides[3]).connect(mix);   // the wash ducks under hits too
     bedDuck = ctx.createGain(); bedDuck.connect(mix);
     bedBus = ctx.createGain(); bedBus.connect(sides[1]).connect(bedDuck);
@@ -135,14 +133,12 @@ export function createAudio(game) {
     const t = ctx.currentTime, D = musou ? SIDE_MU : SIDE;
     const hold = until || (musou ? 0.025 : Math.min(0.1, 0.05 + 0.01 * (n - 1)));
     sides.forEach(({ gain: g }, i) => {
-      g.cancelScheduledValues(t); g.setValueAtTime(g.value, t); g.linearRampToValueAtTime(D[i], t + 0.004);
+      ramp(g, [[0.004, D[i]]]);
       g.setValueAtTime(D[i], t + 0.004 + hold); g.setTargetAtTime(1, t + 0.004 + hold, musou ? 0.05 : 0.08);
     });
   }
   function duck(depth, hold, rel = 0.18) {
-    const g = bedDuck.gain, t = ctx.currentTime;
-    g.cancelScheduledValues(t); g.setValueAtTime(g.value, t);
-    g.linearRampToValueAtTime(depth, t + 0.015); g.setTargetAtTime(1, t + 0.015 + hold, rel);
+    ramp(bedDuck.gain, [[0.015, depth]]); bedDuck.gain.setTargetAtTime(1, ctx.currentTime + 0.015 + hold, rel);
   }
   function startBed() {
     if (bedOn || !ctx || !B.bed) return;
@@ -157,7 +153,7 @@ export function createAudio(game) {
   }
 
   // ---- swing cues: read the hero's move clock (read-only) every animation frame
-  let seq = -1, seenT = -1, lastLine = '';
+  let seq = -1, seenT = -1;
   function cue(m, t) {
     m.hits.forEach((w, wi) => {
       const lead = LEAD[kindOf(w)], t0 = Math.max(0, w.f[0] - lead);
@@ -176,10 +172,7 @@ export function createAudio(game) {
     if (k) return;
     const lines = KIAI[m.id] && (KIAI[m.id][wi] || null);
     if (!lines || (!w.heavy && m.id[0] === 'n' && m.id !== 'n6' && Math.random() > VOICE_P)) return;
-    let id = lines[Math.floor(Math.random() * lines.length)];
-    if (id === lastLine && lines.length > 1) id = lines[(lines.indexOf(id) + 1) % lines.length];
-    lastLine = id;
-    if (B.kiai) play(pick(B.kiai[id]), { gain: w.heavy ? 0.9 : 0.72, rate: rnd(0.97, 1.03), send: 0.2, bus: vox, prio: 1, delay: kiaiDelay });
+    if (B.kiai) play(pick(B.kiai[pick(lines)]), { gain: w.heavy ? 0.9 : 0.72, rate: rnd(0.97, 1.03), send: 0.2, bus: vox, prio: 1, delay: kiaiDelay });
   }
   function frame() {
     requestAnimationFrame(frame);
@@ -198,7 +191,7 @@ export function createAudio(game) {
     const b = 1 - Math.exp(-intensity / 60), t = ctx.currentTime;   // ≈0.35 for a light skirmish, ≈0.8 in a packed melee
     if (bedG) {
       bedG.gain.setTargetAtTime(BED[0] + BED[1] * b, t, 0.3); drumG.gain.setTargetAtTime(DRUMS[0] + DRUMS[1] * b, t, 0.6);
-      musicG.gain.setTargetAtTime((MUSIC[0] + MUSIC[1] * b) * musicK, t, 0.8);
+      musicG.gain.setTargetAtTime(MUSIC[0] + MUSIC[1] * b, t, 0.8);
     }
     // foreground army shouts around the hero, denser as the fight heats up (the bed carries the distant ones)
     if (B.crowd && now > nextShout) {
@@ -295,14 +288,13 @@ export function createAudio(game) {
   // ---- Musou
   on('musou:ready', () => ok() && play(B.ready, { gain: 0.5, send: 0.3, prio: 1 }));
   function undip() {                           // restore the mix and the sfx / voice buses after the Musou
-    const t = ctx.currentTime;
-    for (const [bus, v] of [[sfx, lvl.sfx], [vox, lvl.vox], [post, POST]]) { const g = bus.gain; g.cancelScheduledValues(t); g.setValueAtTime(g.value, t); g.linearRampToValueAtTime(v, t + 0.004); }
+    for (const [bus, v] of [[sfx, 1], [vox, VOX], [post, POST]]) ramp(bus.gain, [[0.004, v]]);
   }
   function stopDrone(fade = 0) {               // fade: drone + riser out over ≈ fade s (the contact blast covers it)
     if (!drone) return;
     const t = ctx.currentTime;
     if (fade && mu && mu.g) for (const p of [mu.g.g, mu.g.rg]) { p.cancelScheduledValues(t); p.setTargetAtTime(0, t, fade / 3); }
-    for (const n of drone) try { n.stop(t + fade); } catch { /* not started */ }
+    for (const n of drone) n.stop(t + fade);
     drone = null;
   }
   // Shape (DW8XL ground Musou): flash + shout → hushed close-up (bed and buses dip, low drone) → drone + riser swell over
@@ -344,7 +336,7 @@ export function createAudio(game) {
     if (!mu.hushed && t >= mu.A) {             // close-up: the world is paused — bed near silent, buses dip, drone hums
       mu.hushed = true;
       ramp(bedDuck.gain, [[0.35, 0.07]]);
-      for (const bus of [sfx, vox]) ramp(bus.gain, [[0.3, (bus === vox ? lvl.vox : lvl.sfx) * 0.3]]);
+      for (const bus of [sfx, vox]) ramp(bus.gain, [[0.3, (bus === vox ? VOX : 1) * 0.3]]);
     }
     if (drone && mu.g && t < mu.C) {           // hum → swell over the last ≈0.55 s of the chase run into the contact
       const u = Math.max(0, (t - (mu.C - 33)) / 33), q = u * u;
@@ -362,7 +354,7 @@ export function createAudio(game) {
     if (!ok()) return;
     if (e.stage === 'contact') {               // first mass hit: the mix comes back with a blast
       stopDrone(0.06);
-      for (const bus of [sfx, vox]) ramp(bus.gain, [[0.004, bus === vox ? lvl.vox : lvl.sfx]]);
+      for (const bus of [sfx, vox]) ramp(bus.gain, [[0.004, bus === vox ? VOX : 1]]);
       ramp(bedDuck.gain, [[0.01, 0.2], [0.4, 0.3]]);   // the flurry owns the mix until the burst
       play(pick(B.hitHeavy), { gain: 1.0, rate: rnd(0.95, 1.02), send: 0.3, prio: 1 });
       play(pick(B.blow), { gain: 0.6, delay: 0.05, send: 0.25, prio: 1 });
@@ -391,7 +383,4 @@ export function createAudio(game) {
     play(B.roar, { gain: 0.4, pan: pan * 0.5, delay: 0.6, bus: vox, send: 0.4 });
   });
   on('scenario', () => { if (ctx) { stopDrone(); undip(); } intensity = 0; seq = -1; mu = null; muFrame = -1; });
-
-
-  return { enabled: true, get context() { return ctx; } };
 }

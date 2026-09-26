@@ -1,12 +1,12 @@
 // Locomotion poses: idle (breathing loop), run (procedural stance/swing cycle, no foot skating, banked lean),
 // dodge (procedural dive roll: pose here + whole-body pitch applied to the rig root by applyRoll), jump/air, land, hurt.
 import * as THREE from 'three';
-import { P, clip, sampleClip, blendPose, spearAbout, CH, POSE_SIZE, STANCE, HERO_SCALE } from '../rig.js';
+import { P, clip, sampleClip, blendPose, spearAbout, CH, POSE_SIZE, HERO_SCALE } from '../rig.js';
 import { LOCO, cadence } from '../locomotion.js';
 import { MOVES } from '../moves.js';
 
 const D2R = Math.PI / 180, TAU = Math.PI * 2;
-const sstep = (a, b, x) => { const u = Math.min(1, Math.max(0, (x - a) / (b - a))); return u * u * (3 - 2 * u); };
+const { smoothstep } = THREE.MathUtils;
 
 // Run carry (DW8): upright forward lean; the right hand holds the shaft at the hip, butt end up ahead-left past the
 // head, blade trailing low behind-right; left arm free.
@@ -130,9 +130,9 @@ export function runPose(phase, k, out, lean = 0) {
 }
 
 // ---------------------------------------------------------------- dive roll
-export const ROLL_PIVOT = [0, 0.48, 0.1];      // root-space point the body pitches around (centre of the tucked ball)
+const ROLL_PIVOT = [0, 0.48, 0.1];      // root-space point the body pitches around (centre of the tucked ball)
 /** Whole-body forward pitch of the roll (rad, 0 → 2π) at normalised dodge time u; done by frame ROLL_PLANT. */
-export function rollAngle(u) { return TAU * sstep(0.02, 0.54, u); }
+function rollAngle(u) { return TAU * smoothstep(u, 0.02, 0.54); }
 
 const _S = new Float32Array(POSE_SIZE);
 /** Dodge pose at normalised time u. The spear counter-rotates against the root pitch so it stays level, trailing. */
@@ -143,7 +143,7 @@ export function rollPose(u, out) {
   _S.set(out);
   for (let i = 0; i < 6; i++) _S[CH.spear + i] = i < 3 ? sp[i] : sp[i] * D2R;
   _S[CH.gripR] = 0;
-  blendPose(_S, out, sstep(0.5, 0.92, u), out);
+  blendPose(_S, out, smoothstep(u, 0.5, 0.92), out);
   return out;
 }
 
@@ -151,7 +151,7 @@ export function rollPose(u, out) {
  * Squash & stretch (render-only, from sim anim state): take-off stretches the body along the jump, a landing or the
  * jump-charge impact squashes it flat and springs back with a small overshoot. Returns the vertical scale (1 = none).
  */
-export function squash(anim) {
+function squash(anim) {
   let s = 0;
   if (anim.id === 'air' && anim.t < 0.22) return 1 + 0.15 * (1 - anim.t / 0.22);          // rise: vy > 0.56 jumpV
   if (anim.id === 'land') s = 0.17 * (1 - anim.t) * (1 - anim.t) - 0.05 * Math.sin(Math.PI * anim.t);
@@ -273,5 +273,3 @@ export function createDodgeGhosts(scene, model) {
     },
   };
 }
-
-export { STANCE, POSE_SIZE };

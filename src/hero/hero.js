@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import { ATTACK_CLIPS, MOVE_FEET } from './anims/attacks.js';
 import { LOCO_CLIPS, runPose, rollPose, applyRoll, createDodgeGhosts } from './anims/locomotion.js';
-import { createRig, sampleClip, blendStep, turnPose, POSE_SIZE, DIM, HERO_SCALE } from './rig.js';
+import { createRig, sampleClip, blendStep, turnPose, POSE_SIZE, HERO_SCALE } from './rig.js';
 import { createHeroModel } from './model.js';
 import { createSecondary } from './secondary.js';
 import { MOVES, moveClip } from './moves.js';
@@ -17,29 +17,19 @@ import { emit } from '../core/events.js';
 export const CLIPS = { ...ATTACK_CLIPS, ...LOCO_CLIPS };
 
 export function createHero(game) {
-  const h = {
-    x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, yaw: 0,
-    hp: 400, hpMax: 400, musou: 0, musouMax: 100,
-    state: 'idle', stateT: 0, move: null, moveT: 0, moveSeq: 0,
-    grounded: true, airAttack: false, iframes: 0, speed: 0, runT: 0, runPhase: 0,
-    combo: 0, comboT: 0, kos: 0,
-    buf: null, bufT: 0, dodgeBuf: 0, jumpBuf: 0, musouBuf: 0, dodgeX: 0, dodgeZ: 1,
-    musouClip: null, musouT: 0,
-    airN: 0, moveAir: false,                                  // combo-system: air-string count, vault
-    dodgeSeq: 0,
-    anim: { id: 'idle', t: 0, k: 0, seq: -1, pid: null, pt: 0, pk: 0, blendF: 1, blendN: 1, from: new Float32Array(POSE_SIZE), yaw: 0,
-      lean: 0,     // lean: run bank (locomotion)
-      fx: 0, fz: 0, px: 0, pz: 0,     // spear-anim: root at the transition / last step (feet stay planted through a blend)
-      mf: null, mt: 0 },              // spear-anim: move whose baked feet apply (MOVE_FEET) and its move time, as shown
-  };
+  const h = { hpMax: 400, musouMax: 100, dodgeX: 0, dodgeZ: 1, anim: { from: new Float32Array(POSE_SIZE) } };
 
   h.reset = ({ x = 0, z = 0, yaw = 0 } = {}) => {
     Object.assign(h, { x, y: 0, z, vx: 0, vy: 0, vz: 0, yaw, hp: h.hpMax, musou: 0, state: 'idle', stateT: 0, move: null,
       moveT: 0, moveSeq: 0, grounded: true, airAttack: false, iframes: 0, speed: 0, runT: 0, runPhase: 0, combo: 0, comboT: 0,
       kos: 0, buf: null, bufT: 0, dodgeBuf: 0, jumpBuf: 0, musouBuf: 0, musouClip: null, musouT: 0,
-      airN: 0, moveAir: false, dodgeSeq: 0 });
-    Object.assign(h.anim, { id: 'idle', t: 0, k: 0, seq: -1, pid: null, pt: 0, pk: 0, blendF: 1, blendN: 1, yaw, lean: 0, fx: x, fz: z, px: x, pz: z, mf: null, mt: 0 });
+      airN: 0, moveAir: false, dodgeSeq: 0 });                // combo-system: air-string count, vault
+    Object.assign(h.anim, { id: 'idle', t: 0, k: 0, seq: -1, blendF: 1, blendN: 1, yaw,
+      lean: 0,                        // run bank (locomotion)
+      fx: x, fz: z, px: x, pz: z,     // spear-anim: root at the transition / last step (feet stay planted through a blend)
+      mf: null, mt: 0 });             // spear-anim: move whose baked feet apply (MOVE_FEET) and its move time, as shown
   };
+  h.reset();
 
   /** Called by combat when an enemy strike connects. Any attack move armours against grunts; officers need `armor`. */
   h.hurt = (dmg, fromX, fromZ, officer) => {
@@ -104,7 +94,6 @@ function updateAnim(h) {
   if (id !== a.id || seq !== a.seq) {
     heroPose(h, _F); a.from.set(_F); turnPose(a.from, a.yaw - h.yaw);   // spear-anim: feet keep their ground spots
     a.fx = a.px; a.fz = a.pz;
-    a.pid = a.id; a.pt = a.t; a.pk = a.k;
     a.blendN = ATTACK_CLIPS[id] ? 5 : id === 'dodge' ? 3 : id === 'run' ? 6 : 8;
     a.blendF = 1; a.id = id; a.seq = seq;          // spear-anim: the first frame of a move already moves off the old pose
   } else if (a.blendF < a.blendN) a.blendF++;
@@ -113,15 +102,12 @@ function updateAnim(h) {
 }
 
 // ---------------------------------------------------------------- pose (pure)
-export function sampleAnim(id, t, k, out, lean = 0) {
-  if (id === 'run') return runPose(t, k, out, lean);
-  if (id === 'dodge') return rollPose(t, out);            // procedural dive roll (anims/locomotion.js)
-  return sampleClip(CLIPS[id] || CLIPS.idle, t, out);
-}
 /** Current pose of the hero (pure function of sim state). */
 export function heroPose(h, out) {
   const a = h.anim;
-  sampleAnim(a.id, a.t, a.k, out, a.lean);
+  if (a.id === 'run') runPose(a.t, a.k, out, a.lean);
+  else if (a.id === 'dodge') rollPose(a.t, out);            // procedural dive roll (anims/locomotion.js)
+  else sampleClip(CLIPS[a.id] || CLIPS.idle, a.t, out);
   // spear-anim: a move that borrows another move's clip (moves.js `anim`) gets feet baked for its own root motion
   if (a.mf) MOVE_FEET[a.mf](a.mt / MOVES[a.mf].frames, out);
   if (a.blendF < a.blendN) {
@@ -145,7 +131,6 @@ export function createHeroView(scene, hero) {
   const pose = new Float32Array(POSE_SIZE);
   const pos = new THREE.Vector3();
   return {
-    rig, model, pose, secondary,
     update(dt) {
       heroPose(hero, pose);
       rig.root.scale.set(1, 1, 1);               // locomotion-dodge r3: applyRoll's squash & stretch is per frame; IK needs scale 1
@@ -156,7 +141,5 @@ export function createHeroView(scene, hero) {
       secondary.update(dt);
     },
     reset() { secondary.reset(); },
-    /** World position of the spear tip as rendered. */
-    spearTip(out) { return rig.joints.weapon.localToWorld(out.set(0, 0, DIM.spearTip)); },
   };
 }

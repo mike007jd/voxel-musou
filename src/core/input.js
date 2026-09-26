@@ -1,7 +1,7 @@
 // Input → actions from keyboard, mouse and gamepad.
 // The sim calls sample() exactly once per fixed step; "pressed" edges are latched so a tap
 // between two steps is never lost.
-export const ACTIONS = ['attack', 'charge', 'jump', 'dodge', 'musou'];
+const ACTIONS = ['attack', 'charge', 'jump', 'dodge', 'musou'];
 
 const KEYMAP = {
   KeyJ: 'attack', KeyK: 'charge', Space: 'jump', KeyL: 'dodge',
@@ -48,8 +48,7 @@ export function createInput() {
   });
 
   function pollPad() {
-    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-    const p = pads && pads[0];
+    const p = navigator.getGamepads()[0];
     if (!p) return null;
     for (const [btn, a] of Object.entries(PADMAP)) {
       const down = !!(p.buttons[btn] && p.buttons[btn].pressed);

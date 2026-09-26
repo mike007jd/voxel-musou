@@ -357,7 +357,7 @@ export function buildDressing(scene, { wallZ, gateX, castle, fieldFires }) {
   const fires = fireSpots.filter((f) => f[1] < 1).map(([x, y, z]) => ({ position: new THREE.Vector3(x, y, z) }));
 
   return {
-    fires, cloths,
+    fires,
     update(t) {
       for (const c of cloths) animateCloth(c, t);
       updateFire(t);

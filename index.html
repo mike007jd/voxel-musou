@@ -14,13 +14,14 @@
 
   /* ---- HUD (owned by the hud part). DW8 layout, concept calligraphy. 1rem = 1/72 viewport height (10 px @720p). ---- */
   html { font-size: calc(100vh / 72); }
+  :root { --brush: "Xingkai SC", "STXingkai", "HudBrush", serif; --kai: "Kaiti SC", "STKaiti", "KaiTi", "HudBrush", serif;
+    --sans: "Avenir Next", "Helvetica Neue", sans-serif; }
   /* Portable brush fallback for machines without the macOS Xingkai/Kaiti assets: Yuji Boku (SIL OFL 1.1, Kinuta Font
      Factory), subset to the HUD's glyphs (src/ui/brush.woff2). Only fetched when the fonts before it are missing.
      When you add HUD text with new CJK characters, re-subset (Google Fonts css2?family=Yuji+Boku&text=...). */
   @font-face { font-family: "HudBrush"; src: url(./src/ui/brush.woff2) format("woff2"); font-display: swap; }
   #hud { position: fixed; inset: 0; pointer-events: none; color: #f4ead8; user-select: none; overflow: hidden;
-    --brush: "Xingkai SC", "STXingkai", "HudBrush", serif; --kai: "Kaiti SC", "STKaiti", "KaiTi", "HudBrush", serif;
-    --sans: "Avenir Next", "Helvetica Neue", sans-serif; --gold: #f2c14e; --teal: #3fb8b0; --seal: #b3261e;
+    --gold: #f2c14e; --teal: #3fb8b0; --seal: #b3261e;
     font-family: var(--kai); text-shadow: 0 .2rem .3rem rgba(0,0,0,.7); }
   #hud > * { position: absolute; }
   #hud .seal { display: inline-block; font: 700 1.3rem/1.05 var(--brush); font-style: normal; color: #f8e6d2; background: var(--seal);
@@ -53,8 +54,8 @@
   #hud .name { position: absolute; left: 13.4rem; bottom: 7.9rem; font: 700 3.8rem/1 var(--brush); color: #f7f1e8;
     text-shadow: 0 0 .1rem #000, .2rem .3rem 0 rgba(0,0,0,.55); }
   #hud .hp { position: absolute; left: 16%; right: 22%; bottom: 6.8rem; height: 1.4rem;
-    clip-path: polygon(0 0, 100% 0, calc(100% - 1rem) 100%, 0 100%); }
-  #hud .hp { background: linear-gradient(rgba(58,46,38,.88), rgba(20,15,12,.88)); }   /* empty track: readable length */
+    clip-path: polygon(0 0, 100% 0, calc(100% - 1rem) 100%, 0 100%);
+    background: linear-gradient(rgba(58,46,38,.88), rgba(20,15,12,.88)); }   /* empty track: readable length */
   #hud .hp::after { content: ""; position: absolute; inset: 0; box-shadow: inset 0 0 0 .12rem rgba(214,184,130,.6); }
   #hud .hp em { opacity: .8; background: repeating-linear-gradient(90deg, rgba(0,0,0,.2) 0 .2rem, transparent .2rem .6rem),
     linear-gradient(#ffe6c0, #d8a060); }                                                  /* damage chunk (lags, then drains) */
@@ -166,29 +167,29 @@
   #hud .h-map .seal { position: absolute; left: .5rem; bottom: .5rem; font-size: 1.05rem; padding: .2rem .15rem; opacity: .9; }
   /* start / pause menu: the sim waits behind it (Esc reopens it) */
   #menu { position: fixed; inset: 0; z-index: 2; display: flex; flex-direction: column; justify-content: center; padding: 0 0 0 9vw;
-    color: #f4ead8; font-family: "Kaiti SC", "STKaiti", "KaiTi", "HudBrush", serif; user-select: none;
+    color: #f4ead8; font-family: var(--kai); user-select: none;
     background: linear-gradient(90deg, rgba(12,8,6,.92) 0, rgba(12,8,6,.78) 40%, rgba(12,8,6,.15) 75%, rgba(12,8,6,0)); }
   #menu[hidden] { display: none; }
-  #menu .t { font: 700 16rem/1 "Xingkai SC", "STXingkai", "HudBrush", serif; letter-spacing: 1rem; color: #f7f1e8;
+  #menu .t { font: 700 16rem/1 var(--brush); letter-spacing: 1rem; color: #f7f1e8;
     text-shadow: .4rem .5rem 0 rgba(0,0,0,.55), 0 0 3rem rgba(0,0,0,.5); }
-  #menu .t i { display: inline-block; vertical-align: 3rem; margin-left: 1.2rem; font: 700 2.4rem/1.05 "Xingkai SC", "STXingkai", "HudBrush", serif;
+  #menu .t i { display: inline-block; vertical-align: 3rem; margin-left: 1.2rem; font: 700 2.4rem/1.05 var(--brush);
     font-style: normal; writing-mode: vertical-rl; padding: .5rem .35rem; border-radius: .3rem; color: #f8e6d2; background: #b3261e; letter-spacing: 0;
     text-shadow: none; box-shadow: inset 0 0 0 .2rem #b3261e, inset 0 0 0 .35rem rgba(248,230,210,.75); }
-  #menu .en { font: 500 1.8rem/1 "Avenir Next", "Helvetica Neue", sans-serif; letter-spacing: 1.1em; margin: .6rem 0 0 .6rem; opacity: .85; }
+  #menu .en { font: 500 1.8rem/1 var(--sans); letter-spacing: 1.1em; margin: .6rem 0 0 .6rem; opacity: .85; }
   #menu .sub { font-size: 2.2rem; letter-spacing: .5rem; margin: 2rem 0 0 .4rem; color: #e8d9bf; }
-  #menu table { align-self: flex-start; margin: 3rem 0 0 .2rem; border-collapse: collapse; font: 500 1.7rem/1 "Avenir Next", "Helvetica Neue", sans-serif;
+  #menu table { align-self: flex-start; margin: 3rem 0 0 .2rem; border-collapse: collapse; font: 500 1.7rem/1 var(--sans);
     border-left: .3rem solid #b3261e; background: linear-gradient(90deg, rgba(0,0,0,.35), rgba(0,0,0,0)); }
   #menu td { padding: .75rem 1.6rem; white-space: nowrap; }
-  #menu td:first-child { font: 700 2.2rem/1 "Kaiti SC", "STKaiti", "KaiTi", "HudBrush", serif; color: #f2c14e; }
-  #menu td:first-child small { font: 500 1.3rem/1 "Avenir Next", "Helvetica Neue", sans-serif; letter-spacing: .15em; color: #cdbb9c; margin-left: .8rem; }
-  #menu kbd { font: 600 1.5rem/1 "Avenir Next", "Helvetica Neue", sans-serif; padding: .3rem .6rem; margin-right: .3rem;
+  #menu td:first-child { font: 700 2.2rem/1 var(--kai); color: #f2c14e; }
+  #menu td:first-child small { font: 500 1.3rem/1 var(--sans); letter-spacing: .15em; color: #cdbb9c; margin-left: .8rem; }
+  #menu kbd { font: 600 1.5rem/1 var(--sans); padding: .3rem .6rem; margin-right: .3rem;
     border: .12rem solid rgba(239,227,207,.6); border-radius: .4rem; background: rgba(0,0,0,.45); }
   #menu button { align-self: flex-start; margin: 3.4rem 0 0 .2rem; padding: 1.2rem 4rem; cursor: pointer; border: 0; border-radius: .4rem;
-    font: 700 3rem/1 "Xingkai SC", "STXingkai", "HudBrush", serif; letter-spacing: .6rem; color: #1a120d;
+    font: 700 3rem/1 var(--brush); letter-spacing: .6rem; color: #1a120d;
     background: linear-gradient(#ffe7a3, #f2c14e 55%, #c98a22); box-shadow: 0 0 0 .15rem #5a3a10, 0 .5rem 1.6rem rgba(0,0,0,.5); }
   #menu button:hover { filter: brightness(1.1); }
-  #menu button small { font: 600 1.4rem/1 "Avenir Next", "Helvetica Neue", sans-serif; letter-spacing: .3em; margin-left: 1rem; }
-  #menu .hint { margin: 1.4rem 0 0 .4rem; font: 500 1.35rem/1.5 "Avenir Next", "Helvetica Neue", sans-serif; letter-spacing: .08em; opacity: .7; }
+  #menu button small { font: 600 1.4rem/1 var(--sans); letter-spacing: .3em; margin-left: 1rem; }
+  #menu .hint { margin: 1.4rem 0 0 .4rem; font: 500 1.35rem/1.5 var(--sans); letter-spacing: .08em; opacity: .7; }
 </style>
 </head>
 <body>
