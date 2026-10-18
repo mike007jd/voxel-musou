@@ -6,6 +6,7 @@
 // left (≈ 0.4 s to cover, the next screen is swapped in under full ink, ≈ 0.5 s to uncover). Transform-only animation
 // of one composited layer: no layout work, holds 60 fps at any size.
 import { noiseBuf } from '../audio/bank.js';
+import { pollPad } from '../core/pad.js';
 
 // ---------------------------------------------------------------- sound (own tiny WebAudio graph; audio.js is battle-only)
 let ac = null;
@@ -60,9 +61,9 @@ export function createNav(cb) {
   const poll = (now) => {
     if (!on) return;
     raf = requestAnimationFrame(poll);
-    const p = navigator.getGamepads ? navigator.getGamepads()[0] : null;
+    const p = pollPad();
     if (!p) return;
-    const b = (i) => !!(p.buttons[i] && p.buttons[i].pressed);
+    const b = (i) => p.pressed(i);
     const edge = (i) => { const d = b(i), was = held[i]; held[i] = d; return d && was === false; };
     if (edge(0) || edge(9)) cb.ok();
     else if (edge(1)) cb.back();
@@ -76,8 +77,8 @@ export function createNav(cb) {
   return {
     start() {
       on = true; rep = 0; held = {};
-      const p = navigator.getGamepads ? navigator.getGamepads()[0] : null;
-      if (p) p.buttons.forEach((q, i) => { held[i] = q.pressed ? true : false; });   // true = wait for release
+      const p = pollPad();
+      if (p) for (let i = 0; i < 17; i++) held[i] = p.pressed(i);   // true = wait for release
       for (const i of [0, 1, 9]) if (held[i] === undefined) held[i] = false;
       if (p && (Math.abs(p.axes[1] || 0) > 0.5 || Math.abs(p.axes[0] || 0) > 0.5)) { rep = (p.axes[1] || p.axes[0]) < 0 ? -1 : 1; repT = Infinity; }   // stick held: wait for release
       raf = requestAnimationFrame(poll);
