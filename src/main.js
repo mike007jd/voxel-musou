@@ -290,3 +290,5 @@ const devChar = params.get('char') || 'zhaoyun';
 const devCh = chapter(params.get('ch') || CHAPTERS.find((m) => m.CH.heroes.includes(devChar))?.CH.id).CH.id;
 inkBoot(() => dev ? flow.go('battle', { mode: ['story', 'trial'].includes(dev) ? dev : 'free', char: devChar, ch: devCh, map: params.get('map') || undefined }) : flow.go('title'));
 requestAnimationFrame(frame);
+// checks/gamepad-browser.mjs: expose the sim so an injected pad can be asserted against movement / actions
+if (params.has('testpad')) globalThis.__vmTest = { game, input, step, get paused() { return paused; }, get state() { return state; }, setPaused };

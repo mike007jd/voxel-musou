@@ -8,6 +8,7 @@
 //   pad     right stick yaw + pitch, cubic response, rate eased over ≈4 steps (no twitch off the deadzone)
 //   R / L1 / L2   'target': recenter behind the hero, or onto the nearest officer (camera.js)
 import { on } from './events.js';
+import { pollPad as readPad } from './pad.js';
 
 const ACTIONS = ['attack', 'charge', 'jump', 'dodge', 'musou', 'target'];
 
@@ -85,10 +86,10 @@ export function createInput() {
   addEventListener('pointermove', (e) => { if (locked()) { dev.lookX += e.movementX; dev.lookY += e.movementY; } });
 
   function pollPad() {
-    const p = navigator.getGamepads ? navigator.getGamepads()[0] : null;
-    if (!p) return null;
+    const p = readPad();
+    if (!p) { for (const k of Object.keys(dev.pad)) dev.pad[k] = false; return null; }
     for (const [btn, a] of Object.entries(PADMAP)) {
-      const down = !!(p.buttons[btn] && p.buttons[btn].pressed);
+      const down = p.pressed(+btn);
       if (down && !dev.pad[btn]) dev.latch[a] = true;
       dev.pad[btn] = down;
     }

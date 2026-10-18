@@ -252,6 +252,8 @@ The repository includes checks that can be run explicitly with **Node 22.15+**; 
 | `node checks/shared-originality.mjs` | Shared model geometry, render commands and scripted Musou timing |
 | `node src/chars/check.mjs` | Playable / NPC kit contracts, portraits, moves, animation clips and Musou |
 | `node src/world/changban.check.mjs` | Changban bridge set pieces and terrain / walk-height consistency |
+| `node checks/gamepad.mjs` | Gamepad slot selection, non-standard mapping fallback, menu nav and battle sample() |
+| `node checks/gamepad-browser.mjs` | Headless Chromium: injected pads drive the title menu and a battle |
 
 These scripts cover simulation and source contracts; they do not verify browser rendering or replace playing the battles.
 
