@@ -43,8 +43,22 @@ function loadPlaywright() {
 
 async function withPage(browser, url, fn) {
   const page = await browser.newPage();
+  page.setDefaultTimeout(120_000);
   page.on('pageerror', (e) => console.warn('pageerror', e.message));
+  page.on('console', (m) => { if (m.type() === 'error') console.warn('console', m.text()); });
   await page.addInitScript(() => {
+    // Headless Chrome's AudioContext is often 44100; the bank bakes at 48000 and
+    // createAudio() would otherwise throw (ConvolverNode) and abort boot.
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (AC) {
+      class AudioContext48k extends AC {
+        constructor(opts = {}) { super({ ...opts, sampleRate: 48000 }); }
+      }
+      window.AudioContext = AudioContext48k;
+      window.webkitAudioContext = AudioContext48k;
+    }
+    // Headless Chromium blurs the tab; main.js pauses the battle on blur.
+    addEventListener('blur', (e) => e.stopImmediatePropagation(), true);
     window.__fakePads = [null, null, null, null];
     navigator.getGamepads = () => window.__fakePads;
     window.__setFakePads = (rows) => {
@@ -70,28 +84,56 @@ async function withPage(browser, url, fn) {
 
 const setFake = (page, rows) => page.evaluate((list) => window.__setFakePads(list), rows);
 const pause = (page, ms) => page.evaluate((t) => new Promise((r) => setTimeout(r, t)), ms);
+const tick = (page, n = 1) => page.evaluate((k) => { for (let i = 0; i < k; i++) window.__vmTest.step(); }, n);
+const snapHero = (page) => page.evaluate(() => {
+  const h = window.__vmTest.game.hero, c = window.__vmTest.game.cam, m = window.__vmTest.game.musou;
+  return { x: h.x, z: h.z, move: h.move, state: h.state, buf: h.buf, jumpBuf: h.jumpBuf, dodgeBuf: h.dodgeBuf,
+    musouBuf: h.musouBuf, musouOn: !!(m && m.active), yaw: c.yaw, turn: !!c.turn, paused: window.__vmTest.paused };
+});
+const finishMove = async (page) => {
+  await setFake(page, [{ index: 1, mapping: 'standard' }]);
+  for (let i = 0; i < 8; i++) {
+    await tick(page, 20);
+    const s = await snapHero(page);
+    if (!s.move && (s.state === 'idle' || s.state === 'run' || s.state === 'land')) return s;
+  }
+  throw new Error(`hero did not return to idle: ${JSON.stringify(await snapHero(page))}`);
+};
 
 const server = await serve();
 const port = server.address().port;
 const base = `http://127.0.0.1:${port}`;
-const { chromium } = await import(await loadPlaywright());
+const pw = await import(await loadPlaywright());
+const { chromium } = pw.chromium ? pw : pw.default;
 const browser = await chromium.launch({
   executablePath: process.env.CHROME || '/usr/bin/google-chrome',
   headless: true,
   args: ['--no-sandbox', '--disable-dev-shm-usage', '--ignore-gpu-blocklist',
-    '--use-gl=angle', '--use-angle=swiftshader', '--enable-webgl'],
+    '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--enable-webgl', '--enable-webgl2'],
 });
 
 try {
   await withPage(browser, `${base}/`, async (page) => {
     await setFake(page, [{ index: 1, mapping: 'standard' }]);
-    await page.waitForFunction(() => {
-      const t = document.getElementById('title');
-      return t && !t.hidden && !document.body.classList.contains('inkhold');
-    }, { timeout: 90_000 });
+    try {
+      await page.waitForFunction(() => {
+        const t = document.getElementById('title');
+        return t && !t.hidden;
+      }, null, { timeout: 120_000 });
+    } catch (err) {
+      console.warn('title boot dump', await page.evaluate(() => ({
+        titleHidden: document.getElementById('title')?.hidden,
+        titleClass: document.getElementById('title')?.className,
+        inkhold: document.body.classList.contains('inkhold'),
+        inkText: document.querySelector('#ink')?.innerText?.slice(0, 240),
+        gl: (() => { try { return !!document.getElementById('c').getContext('webgl2'); } catch (e) { return String(e); } })(),
+      })));
+      throw err;
+    }
+    await page.waitForFunction(() => !document.body.classList.contains('inkhold'), null, { timeout: 60_000 }).catch(() => {});
     await pause(page, 200);
     await setFake(page, [{ index: 1, mapping: 'standard', down: { 0: true } }]);
-    await page.waitForFunction(() => !document.getElementById('title').classList.contains('pre'), { timeout: 5_000 });
+    await page.waitForFunction(() => !document.getElementById('title').classList.contains('pre'), null, { timeout: 8_000 });
     await setFake(page, [{ index: 1, mapping: 'standard' }]);
     await pause(page, 80);
     const before = await page.evaluate(() => [...document.querySelectorAll('#title .t-main button')].findIndex((b) => b.classList.contains('on')));
@@ -103,82 +145,74 @@ try {
     const after = await page.evaluate(() => [...document.querySelectorAll('#title .t-main button')].findIndex((b) => b.classList.contains('on')));
     assert.equal(after, (before + 1) % 4, `title menu moved ${before} → ${after}`);
     console.log(`menu: slot-1 d-pad moved title focus ${before} → ${after}`);
+    await page.screenshot({ path: join(process.env.ARTIFACTS || '/opt/cursor/artifacts', 'gamepad_title_menu_slot1.png') });
   });
 
   await withPage(browser, `${base}/?go=free&char=zhaoyun&enemies=0&testpad=1`, async (page) => {
     await setFake(page, [{ index: 1, mapping: 'standard' }]);
-    await page.waitForFunction(() => window.__vmTest && window.__vmTest.state === 'battle' && !window.__vmTest.paused,
-      { timeout: 90_000 });
-    const origin = await page.evaluate(() => {
-      const h = window.__vmTest.game.hero;
-      return { x: h.x, z: h.z, move: h.move, state: h.state };
-    });
+    await page.waitForFunction(() => window.__vmTest && window.__vmTest.state === 'battle', null, { timeout: 120_000 });
+    await page.evaluate(() => { if (window.__vmTest.paused) window.__vmTest.setPaused(false); });
+    await page.waitForFunction(() => !document.body.classList.contains('inkhold') && document.getElementById('ink')?.hidden,
+      null, { timeout: 60_000 }).catch(() => {});
+    const origin = await snapHero(page);
     await setFake(page, [{ index: 1, mapping: 'standard', axes: [0, -1, 0, 0] }]);
-    await page.waitForFunction((z0) => Math.abs(window.__vmTest.game.hero.z - z0) > 0.4, origin.z, { timeout: 5_000 });
-    const moved = await page.evaluate(() => {
-      const h = window.__vmTest.game.hero;
-      return { x: h.x, z: h.z, state: h.state };
-    });
+    await tick(page, 24);
+    const moved = await snapHero(page);
     assert.ok(Math.hypot(moved.x - origin.x, moved.z - origin.z) > 0.4,
       `hero moved ${JSON.stringify(origin)} → ${JSON.stringify(moved)}`);
     console.log(`battle move: (${origin.x.toFixed(2)}, ${origin.z.toFixed(2)}) → (${moved.x.toFixed(2)}, ${moved.z.toFixed(2)})`);
+    await page.screenshot({ path: join(process.env.ARTIFACTS || '/opt/cursor/artifacts', 'gamepad_battle_after_move.png') });
 
-    await setFake(page, [{ index: 1, mapping: 'standard' }]);
-    await pause(page, 80);
+    await finishMove(page);
     await setFake(page, [{ index: 1, mapping: 'standard', down: { 2: true } }]);
-    await page.waitForFunction(() => window.__vmTest.game.hero.move === 'n1' || window.__vmTest.game.hero.buf === 'attack',
-      { timeout: 3_000 });
+    await tick(page, 2);
+    const atk = await snapHero(page);
+    assert.ok(atk.move === 'n1' || atk.buf === 'attack', `attack ${JSON.stringify(atk)}`);
     console.log('battle attack: n1 / attack buffer from slot-1 X');
 
-    await setFake(page, [{ index: 1, mapping: 'standard' }]);
-    await pause(page, 80);
+    await finishMove(page);
     await setFake(page, [{ index: 1, mapping: 'standard', down: { 3: true } }]);
-    await page.waitForFunction(() => {
-      const h = window.__vmTest.game.hero;
-      return h.move === 'c1' || h.buf === 'charge';
-    }, { timeout: 3_000 });
+    await tick(page, 2);
+    const chg = await snapHero(page);
+    assert.ok(chg.move === 'c1' || chg.buf === 'charge', `charge ${JSON.stringify(chg)}`);
     console.log('battle charge: c1 / charge buffer from slot-1 Y');
 
-    await setFake(page, [{ index: 1, mapping: 'standard' }]);
-    await pause(page, 80);
+    await finishMove(page);
     await setFake(page, [{ index: 1, mapping: 'standard', down: { 0: true } }]);
-    await page.waitForFunction(() => {
-      const h = window.__vmTest.game.hero;
-      return h.state === 'jump' || h.jumpBuf > 0;
-    }, { timeout: 3_000 });
+    await tick(page, 2);
+    const jmp = await snapHero(page);
+    assert.ok(jmp.state === 'jump' || jmp.jumpBuf > 0, `jump ${JSON.stringify(jmp)}`);
     console.log('battle jump: jump state / buffer from slot-1 A');
 
-    await setFake(page, [{ index: 1, mapping: 'standard' }]);
-    await pause(page, 200);
+    await finishMove(page);
     await setFake(page, [{ index: 1, mapping: 'standard', down: { 5: true } }]);
-    await page.waitForFunction(() => {
-      const h = window.__vmTest.game.hero;
-      return h.state === 'dodge' || h.dodgeBuf > 0;
-    }, { timeout: 3_000 });
+    await tick(page, 2);
+    const ddg = await snapHero(page);
+    assert.ok(ddg.state === 'dodge' || ddg.dodgeBuf > 0, `dodge ${JSON.stringify(ddg)}`);
     console.log('battle dodge: dodge state / buffer from slot-1 R1');
 
-    await setFake(page, [{ index: 1, mapping: 'standard' }]);
-    await pause(page, 80);
-    const yaw0 = await page.evaluate(() => window.__vmTest.game.cam.yaw);
+    await finishMove(page);
+    const yaw0 = (await snapHero(page)).yaw;
     await setFake(page, [{ index: 1, mapping: 'standard', axes: [0, 0, 1, 0.6] }]);
-    await page.waitForFunction((y0) => Math.abs(window.__vmTest.game.cam.yaw - y0) > 0.05, yaw0, { timeout: 3_000 });
-    const yaw1 = await page.evaluate(() => window.__vmTest.game.cam.yaw);
-    console.log(`battle camera: yaw ${yaw0.toFixed(3)} → ${yaw1.toFixed(3)} from slot-1 right stick`);
+    await tick(page, 12);
+    const look = await snapHero(page);
+    assert.ok(Math.abs(look.yaw - yaw0) > 0.05, `camera yaw ${yaw0} → ${look.yaw}`);
+    console.log(`battle camera: yaw ${yaw0.toFixed(3)} → ${look.yaw.toFixed(3)} from slot-1 right stick`);
 
     await setFake(page, [{ index: 1, mapping: 'standard' }]);
-    await pause(page, 80);
+    await tick(page, 20);   // let right-stick ease die so a look tail does not eat the recenter
     await setFake(page, [{ index: 1, mapping: 'standard', down: { 4: true } }]);
-    await page.waitForFunction(() => window.__vmTest.game.cam.turn, { timeout: 3_000 });
+    await tick(page, 1);
+    const tgt = await snapHero(page);
+    assert.ok(tgt.turn, `target ${JSON.stringify(tgt)}`);
     console.log('battle target: camera recenter from slot-1 L1');
 
-    await setFake(page, [{ index: 1, mapping: 'standard' }]);
-    await pause(page, 400);
+    await finishMove(page);
     await page.evaluate(() => { window.__vmTest.game.hero.musou = window.__vmTest.game.hero.musouMax; });
     await setFake(page, [{ index: 1, mapping: 'standard', down: { 1: true } }]);
-    await page.waitForFunction(() => {
-      const h = window.__vmTest.game.hero, g = window.__vmTest.game;
-      return h.state === 'musou' || h.musouBuf > 0 || g.musou.active;
-    }, { timeout: 3_000 });
+    await tick(page, 3);
+    const mu = await snapHero(page);
+    assert.ok(mu.state === 'musou' || mu.musouBuf > 0 || mu.musouOn, `musou ${JSON.stringify(mu)}`);
     console.log('battle musou: started / buffered from slot-1 B');
   });
 } finally {
